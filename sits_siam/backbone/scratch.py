@@ -10,8 +10,7 @@ class Attention(nn.Module):
         scores = torch.matmul(X, X.transpose(-2, -1)) / torch.sqrt(
             torch.tensor(d_k, dtype=X.dtype)
         )
-        if mask is not None:
-            scores = scores.masked_fill(mask, float("-inf"))
+        scores = scores.masked_fill(mask, float("-inf"))
         p_attn = F.softmax(scores, dim=-1)
         output = torch.matmul(p_attn, X)
         return output
@@ -28,23 +27,15 @@ class MultiHeadAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.batch_first = batch_first
 
-    def forward(self, X, src_key_padding_mask=None):
-        if not self.batch_first:
-            X = X.transpose(0, 1)
+    def forward(self, X, src_key_padding_mask):
         batch_size, seq_len, _ = X.size()
         X = self.linear(X)
         X = X.view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
-        # Prepare mask
-        if src_key_padding_mask is not None:
-            # src_key_padding_mask: (batch_size, seq_len)
-            # Expand to (batch_size, num_heads, seq_len, seq_len)
-            mask = (
-                src_key_padding_mask.unsqueeze(1)
-                .unsqueeze(2)
-                .expand(-1, self.num_heads, -1, -1)
-            )
-        else:
-            mask = None
+        mask = (
+            src_key_padding_mask.unsqueeze(1)
+            .unsqueeze(2)
+            .expand(-1, self.num_heads, -1, -1)
+        )
         X = self.attention(X, mask)
         X = (
             X.transpose(1, 2)
@@ -52,8 +43,7 @@ class MultiHeadAttention(nn.Module):
             .view(batch_size, seq_len, self.num_heads * self.d_k)
         )
         X = self.output_linear(X)
-        if not self.batch_first:
-            X = X.transpose(0, 1)
+
         return X
 
 
@@ -98,6 +88,6 @@ class TransformerEncoder(nn.Module):
     def forward(self, X, mask=None, src_key_padding_mask=None):
         for layer in self.layers:
             X = layer(X, src_mask=mask, src_key_padding_mask=src_key_padding_mask)
-        if self.norm is not None:
-            X = self.norm(X)
+
+        X = self.norm(X)
         return X
