@@ -1,1 +1,1 @@
-from .data import SitsDataset
+from .dataset import SitsDataset
