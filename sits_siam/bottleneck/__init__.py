@@ -1,2 +1,2 @@
 from .pooling_bottleneck import PoolingBottleneck
-from .ndfi_w2v_bottleneck import NDFIWord2VecBottleneck
+from .ndvi_w2v_bottleneck import NDVIWord2VecBottleneck

@@ -1,8 +1,35 @@
+from typing import List, Dict, Tuple
+
 import numpy as np
 import torch
+import pandas as pd
 
 
-def get_weight(x):
+def get_weight_for_ndvi_word2vec(x: np.ndarray) -> np.ndarray:
+    """
+    Compute sample weights based on NDVI from input spectral data.
+
+    This function calculates the Normalized Difference Vegetation Index (NDVI) from the input spectral data,
+    applies cloud and dark pixel masking, and computes weights based on the NDVI values. The weights are then
+    normalized to sum to 1.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Input spectral data array of shape (n_samples, n_features). The array should include at least the following bands:
+        - x[:, 0]: Blue
+        - x[:, 1]: Green
+        - x[:, 2]: Red
+        - x[:, 6]: Near-Infrared (NIR)
+        - x[:, 8]: Shortwave Infrared 1 (SWIR1)
+        - x[:, 9]: Shortwave Infrared 2 (SWIR2)
+
+    Returns
+    -------
+    np.ndarray
+        Normalized weights array of shape (n_samples,).
+
+    """
     all_zero_mask = np.all(x == 0, axis=1)
 
     score = np.ones(x.shape[0])
@@ -23,7 +50,27 @@ def get_weight(x):
     return weight
 
 
-def normalize(x, mean, std):
+def normalize(x: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
+    """
+    Normalize input data using provided mean and standard deviation.
+
+    Rows where all elements are zero are set to zero after normalization to prevent division by zero or NaN values.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Input data array to be normalized.
+    mean : np.ndarray
+        Mean values for each feature used in normalization.
+    std : np.ndarray
+        Standard deviation values for each feature used in normalization.
+
+    Returns
+    -------
+    np.ndarray
+        Normalized data array.
+
+    """
     x = x.copy()
 
     all_zero_mask = np.all(x == 0, axis=1)
@@ -35,12 +82,42 @@ def normalize(x, mean, std):
 
 
 class SitsDataset(torch.utils.data.Dataset):
+    """
+    Dataset class for satellite image time series data.
+
+    Processes input DataFrame into tensors suitable for training machine learning models, including data normalization
+    and computation of sample weights.
+
+    Parameters
+    ----------
+    dataframe : pd.DataFrame
+        Input DataFrame containing satellite images and labels. Expected columns include 'id', 'time', 'doy', and spectral bands.
+    max_seq_len : int, optional
+        Maximum sequence length for time series data (default is 70).
+    num_features : int, optional
+        Number of features per sample (default is 10).
+    mean : List[float], optional
+        Mean values for normalization of each feature (default values provided).
+    std : List[float], optional
+        Standard deviation values for normalization of each feature (default values provided).
+
+    Attributes
+    ----------
+    xs : np.ndarray
+        Array of input features of shape (num_samples, max_seq_len, num_features).
+    doys : np.ndarray
+        Array of day-of-year values corresponding to each time step.
+    ys : np.ndarray
+        Array of labels corresponding to each sample.
+
+    """
+
     def __init__(
         self,
-        dataframe,
-        max_seq_len=70,
-        num_features=10,
-        mean=[
+        dataframe: pd.DataFrame,
+        max_seq_len: int = 70,
+        num_features: int = 10,
+        mean: List[float] = [
             0.0656,
             0.0948,
             0.1094,
@@ -52,7 +129,7 @@ class SitsDataset(torch.utils.data.Dataset):
             0.2679,
             0.1985,
         ],
-        std=[
+        std: List[float] = [
             0.036289,
             0.043310,
             0.064736,
@@ -106,16 +183,43 @@ class SitsDataset(torch.utils.data.Dataset):
         labels_df = dataframe[["id", "label"]].drop_duplicates("id").set_index("id")
         self.ys = labels_df.loc[unique_ids, "label"].to_numpy()
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """
+        Return the number of samples in the dataset.
+
+        Returns
+        -------
+        int
+            Number of samples.
+        """
         return self.ys.shape[0]
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
+        """
+        Get the sample corresponding to the given index.
+
+        Parameters
+        ----------
+        idx : int
+            Index of the sample to retrieve.
+
+        Returns
+        -------
+        Tuple[Dict[str, torch.Tensor], torch.Tensor]
+            A tuple containing:
+            - A dictionary with keys:
+                'doy': torch.Tensor of day-of-year values,
+                'mask': torch.Tensor indicating missing data,
+                'x': torch.Tensor of normalized input features,
+                'weight': torch.Tensor of sample weights.
+            - The corresponding label tensor.
+        """
         x = self.xs[idx]
         return {
             "doy": torch.from_numpy(self.doys[idx]).long(),
             "mask": torch.from_numpy(x.sum(1) == 0),
             "x": torch.from_numpy(normalize(x, self.mean, self.std)).float(),
-            "weight": torch.from_numpy(get_weight(x)).float(),
+            "weight": torch.from_numpy(get_weight_for_ndvi_word2vec(x)).float(),
         }, torch.tensor(self.ys[idx], dtype=torch.long)
 
 
@@ -124,5 +228,5 @@ if __name__ == "__main__":
 
     whole_df = pd.read_parquet("data/california_sits_bert_original.parquet")
     train_df = whole_df[whole_df["use_bert"] == 0].reset_index(drop=True)
-    train_dataset = SitsDataset(train_df, max_length=45)
+    train_dataset = SitsDataset(train_df, max_seq_len=45)
     print(train_dataset[0])
