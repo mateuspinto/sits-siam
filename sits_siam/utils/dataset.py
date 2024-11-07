@@ -107,21 +107,10 @@ class SitsDataset(torch.utils.data.Dataset):
                 'weight': torch.Tensor of sample weights.
             - The corresponding label tensor.
         """
-        y = torch.tensor(self.ys[idx], dtype=torch.long)
-        sample = {
-            "doy": self.doys[idx],
-            "x": self.xs[idx],
-        }
+        sample = {"doy": self.doys[idx], "x": self.xs[idx], "y": self.ys[idx]}
 
         if self.transform:
-            for transform in self.transform:
-                sample = transform(sample)
-
-        sample["doy"] = torch.from_numpy(sample["doy"]).long()
-        sample["mask"] = torch.from_numpy(sample["mask"])
-        sample["x"] = torch.from_numpy(sample["x"]).float()
-        sample["weight"] = torch.from_numpy(sample["weight"]).float()
-        sample["y"] = torch.tensor(self.ys[idx], dtype=torch.long)
+            sample = self.transform(sample)
 
         return sample
 

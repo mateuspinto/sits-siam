@@ -1,5 +1,6 @@
 import numpy as np
 import random
+import torch
 
 
 # ---------------------------- Spectral augmentation ----------------------------
@@ -98,7 +99,6 @@ class RandomTempRemoval:
     def __call__(self, sample):
         x = sample["x"]
         doy = sample["doy"]
-
         mask = np.array([random.random() >= 0.15 for _ in range(x.shape[0])])
 
         x_kept = x[mask]
@@ -230,11 +230,38 @@ class Normalize:
             0.09784,
         ],
     ):
-        self.a = a
-        self.b = b
+        self.a = np.array(a, dtype=np.half)
+        self.b = np.array(b, dtype=np.half)
 
     def __call__(self, sample):
         x = sample["x"]
         x = (x - self.a) / self.b
         sample["x"] = x
+        return sample
+
+
+class ToPytorchTensor:
+    def __call__(self, sample):
+        for key, value in sample.items():
+            if (
+                (value.dtype == np.half)
+                or (value.dtype == np.float32)
+                or (value.dtype == np.float64)
+            ):
+                sample[key] = torch.tensor(value, dtype=torch.float32)
+            elif value.dtype == np.bool:
+                sample[key] = torch.tensor(value, dtype=torch.bool)
+            else:
+                sample[key] = torch.tensor(value, dtype=torch.int64)
+
+        return sample
+
+
+class Pipeline:
+    def __init__(self, transforms):
+        self.transforms = transforms
+
+    def __call__(self, sample):
+        for transform in self.transforms:
+            sample = transform(sample)
         return sample
