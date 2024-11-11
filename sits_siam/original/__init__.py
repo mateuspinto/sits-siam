@@ -3,3 +3,5 @@ from .sits_bert import (
     OriginalSITSBertMissingMaskFix,
     OriginalSITSBertDataset,
 )
+
+from .sits_moco import OriginalSITSMoco
