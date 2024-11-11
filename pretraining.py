@@ -1,28 +1,18 @@
-import random
-import os
-
 import pandas as pd
 import pytorch_lightning as pl
 import torch
-import torch.nn as nn
-from torchmetrics.classification import MulticlassF1Score
-from torch.optim import AdamW
 import numpy as np
-
-from print_color import print
 
 from lightly.loss import NegativeCosineSimilarity
 from lightly.utils.debug import std_of_l2_normalized
 from lightly.models.modules.heads import SimSiamPredictionHead, SimSiamProjectionHead
 
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+
 from sits_siam.backbone import TransformerBackbone
-from sits_siam.head import BertHead, ClassifierHead
 from sits_siam.utils import SitsDataset
-from sits_siam.bottleneck import PoolingBottleneck, NDVIWord2VecBottleneck
+from sits_siam.bottleneck import PoolingBottleneck
 from sits_siam.augment import (
-    AddNDVIWeights,
-    RandomChanSwapping,
-    RandomChanRemoval,
     RandomAddNoise,
     RandomTempSwapping,
     RandomTempShift,
@@ -61,11 +51,10 @@ class FastSiamMultiViewTransform(object):
         self.n_views = n_views
         self.transform = Pipeline(
             [
-                # AddNDVIWeights(),
-                RandomAddNoise(),
-                RandomTempSwapping(),
+                RandomAddNoise(0.02),
+                RandomTempSwapping(max_distance=3),
                 RandomTempShift(),
-                # RandomTempRemoval(),
+                RandomTempRemoval(),
                 AddMissingMask(),
                 Normalize(
                     a=median,
@@ -109,7 +98,6 @@ class TransformerClassifier(pl.LightningModule):
         x = input["x"]
         doy = input["doy"]
         mask = input["mask"]
-        # weight = input["weight"]
 
         f = self.backbone(x, doy, mask)
         f = self.bottleneck(f)
@@ -187,8 +175,18 @@ val_dataloader = torch.utils.data.DataLoader(
     val_dataset, batch_size=512, shuffle=False, num_workers=4
 )
 
-trainer = pl.Trainer(max_epochs=20)
+early_stopping = EarlyStopping(monitor="val_loss", patience=3, mode="min")
+
+checkpoint_callback = ModelCheckpoint(
+    monitor="val_loss", filename="best_model", save_top_k=1, mode="min"
+)
+
+trainer = pl.Trainer(max_epochs=5, callbacks=[checkpoint_callback, early_stopping])
 model = TransformerClassifier()
 
 
 trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+model = TransformerClassifier.load_from_checkpoint(checkpoint_callback.best_model_path)
+
+# Saving pytorch model backbone state dict
+torch.save(model.backbone.state_dict(), "weights/fastsiam.pth")

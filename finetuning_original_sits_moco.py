@@ -24,6 +24,7 @@ from sits_siam.augment import (
     AddMissingMask,
     Pipeline,
     AddNDVIWeights,
+    Normalize,
     ToPytorchTensor,
 )
 
@@ -48,6 +49,9 @@ def beautify_prints():
 setup_seed()
 beautify_prints()
 
+mean = [0.147, 0.169, 0.186, 0.221, 0.273, 0.297, 0.308, 0.316, 0.256, 0.188]
+std = [0.227, 0.219, 0.222, 0.22, 0.2, 0.193, 0.192, 0.182, 0.123, 0.106]
+
 train_transforms = Pipeline(
     [
         # AddNDVIWeights(),
@@ -58,10 +62,10 @@ train_transforms = Pipeline(
         # RandomTempShift(),
         AddMissingMask(),
         AddNDVIWeights(),
-        # Normalize(
-        #     # a=median,
-        #     # b=iqd,
-        # ),
+        Normalize(
+            a=mean,
+            b=std,
+        ),
         ToPytorchTensor(),
     ]
 )
@@ -71,10 +75,10 @@ val_transforms = Pipeline(
         # AddNDVIWeights(),
         AddMissingMask(),
         AddNDVIWeights(),
-        # Normalize(
-        #     # a=median,
-        #     # b=iqd,
-        # ),
+        Normalize(
+            a=mean,
+            b=std,
+        ),
         ToPytorchTensor(),
     ]
 )
@@ -86,9 +90,9 @@ val_df = whole_df[whole_df.use_bert == 1].reset_index(drop=True)
 test_df = whole_df[whole_df.use_bert == 2].reset_index(drop=True)
 
 print(f"Train df={len(train_df)}, Val df={len(val_df)}, Test df={len(test_df)}")
-train_dataset = SitsDataset(train_df, max_seq_len=64, transform=train_transforms)
-val_dataset = SitsDataset(val_df, max_seq_len=64, transform=val_transforms)
-test_dataset = SitsDataset(test_df, max_seq_len=64, transform=val_transforms)
+train_dataset = SitsDataset(train_df, max_seq_len=45, transform=train_transforms)
+val_dataset = SitsDataset(val_df, max_seq_len=45, transform=val_transforms)
+test_dataset = SitsDataset(test_df, max_seq_len=45, transform=val_transforms)
 
 del train_df
 del val_df
@@ -178,7 +182,7 @@ test_dataloader = torch.utils.data.DataLoader(
     test_dataset, batch_size=1024, shuffle=False
 )
 
-early_stopping = EarlyStopping(monitor="val_loss", patience=20, mode="min")
+early_stopping = EarlyStopping(monitor="val_loss", patience=2, mode="min")
 
 checkpoint_callback = ModelCheckpoint(
     monitor="val_loss", filename="best_model", save_top_k=1, mode="min"
