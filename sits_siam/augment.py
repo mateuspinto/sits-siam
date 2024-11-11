@@ -249,7 +249,7 @@ class ToPytorchTensor:
                 or (value.dtype == np.float64)
             ):
                 sample[key] = torch.tensor(value, dtype=torch.float32)
-            elif value.dtype == np.bool:
+            elif value.dtype == np.bool_:
                 sample[key] = torch.tensor(value, dtype=torch.bool)
             else:
                 sample[key] = torch.tensor(value, dtype=torch.int64)
