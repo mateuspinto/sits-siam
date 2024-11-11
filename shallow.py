@@ -192,7 +192,6 @@ else:
     )
 
 df = pd.read_parquet("data/california_sits_bert_original.parquet")
-df = df[df.use_bert == 2].reset_index(drop=True)
 labels = df[["label", "use_bert", "id"]].groupby("id").first()
 features = tsfresh.extract_features(
     df,
@@ -200,8 +199,15 @@ features = tsfresh.extract_features(
     column_sort="time",
     kind_to_fc_parameters=kind_to_fc_parameters,
 )
-
 df = labels.merge(features, left_index=True, right_index=True)
+
+model = LGBMClassifier(verbosity=-1, n_jobs=-1)
+model.fit(
+    df[df.use_bert != 2].drop(columns=["label", "use_bert"]).to_numpy(),
+    df[df.use_bert != 2].label.to_numpy(),
+)
+
+df = df[df.use_bert == 2].reset_index(drop=True)
 
 y_true = df.label.to_numpy()
 y_pred = model.predict(df.drop(columns=["label", "use_bert"]).to_numpy())
