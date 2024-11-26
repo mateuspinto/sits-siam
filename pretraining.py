@@ -10,7 +10,7 @@ from lightly.models.modules.heads import SimSiamPredictionHead, SimSiamProjectio
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
 from sits_siam.backbone import TransformerBackbone
-from sits_siam.utils import SitsDataset
+from sits_siam.utils import SitsDatasetFromDataframe
 from sits_siam.bottleneck import PoolingBottleneck
 from sits_siam.augment import (
     RandomAddNoise,
@@ -76,10 +76,10 @@ whole_df = pd.read_parquet("data/california_sits_bert_original.parquet")
 train_df = whole_df[whole_df.use_bert.isin([0, 2])].reset_index(drop=True)
 val_df = whole_df[whole_df.use_bert == 1].reset_index(drop=True)
 
-train_dataset = SitsDataset(
+train_dataset = SitsDatasetFromDataframe(
     train_df, max_seq_len=45, transform=FastSiamMultiViewTransform()
 )
-val_dataset = SitsDataset(
+val_dataset = SitsDatasetFromDataframe(
     val_df, max_seq_len=45, transform=FastSiamMultiViewTransform()
 )
 

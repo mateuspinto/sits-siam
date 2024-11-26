@@ -23,7 +23,7 @@ from print_color import print
 
 from sits_siam.backbone import TransformerBackbone
 from sits_siam.head import BertHead, ClassifierHead
-from sits_siam.utils import SitsDataset
+from sits_siam.utils import SitsDatasetFromDataframe
 from sits_siam.bottleneck import PoolingBottleneck, NDVIWord2VecBottleneck
 from sits_siam.augment import (
     AddNDVIWeights,
@@ -107,9 +107,13 @@ train_df = whole_df[whole_df.use_bert == 0].reset_index(drop=True)
 val_df = whole_df[whole_df.use_bert == 1].reset_index(drop=True)
 test_df = whole_df[whole_df.use_bert == 2].reset_index(drop=True)
 
-train_dataset = SitsDataset(train_df, max_seq_len=45, transform=train_transforms)
-val_dataset = SitsDataset(val_df, max_seq_len=45, transform=val_transforms)
-test_dataset = SitsDataset(test_df, max_seq_len=45, transform=val_transforms)
+train_dataset = SitsDatasetFromDataframe(
+    train_df, max_seq_len=45, transform=train_transforms
+)
+val_dataset = SitsDatasetFromDataframe(val_df, max_seq_len=45, transform=val_transforms)
+test_dataset = SitsDatasetFromDataframe(
+    test_df, max_seq_len=45, transform=val_transforms
+)
 
 print(
     f"Train df={len(train_dataset)}, Val df={len(val_dataset)}, Test df={len(test_dataset)}"

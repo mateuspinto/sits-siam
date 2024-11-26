@@ -28,7 +28,7 @@ from sits_siam.augment import (
     ToPytorchTensor,
 )
 
-from sits_siam.utils import SitsDataset
+from sits_siam.utils import SitsDatasetFromDataframe
 
 
 def setup_seed():
@@ -90,9 +90,13 @@ val_df = whole_df[whole_df.use_bert == 1].reset_index(drop=True)
 test_df = whole_df[whole_df.use_bert == 2].reset_index(drop=True)
 
 print(f"Train df={len(train_df)}, Val df={len(val_df)}, Test df={len(test_df)}")
-train_dataset = SitsDataset(train_df, max_seq_len=45, transform=train_transforms)
-val_dataset = SitsDataset(val_df, max_seq_len=45, transform=val_transforms)
-test_dataset = SitsDataset(test_df, max_seq_len=45, transform=val_transforms)
+train_dataset = SitsDatasetFromDataframe(
+    train_df, max_seq_len=45, transform=train_transforms
+)
+val_dataset = SitsDatasetFromDataframe(val_df, max_seq_len=45, transform=val_transforms)
+test_dataset = SitsDatasetFromDataframe(
+    test_df, max_seq_len=45, transform=val_transforms
+)
 
 del train_df
 del val_df

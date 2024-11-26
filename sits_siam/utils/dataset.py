@@ -1,13 +1,15 @@
 from typing import Dict, Tuple
+from tqdm.std import tqdm
 
+import pathlib
 import numpy as np
 import torch
 import pandas as pd
 
 
-class SitsDataset(torch.utils.data.Dataset):
+class SitsDatasetFromDataframe(torch.utils.data.Dataset):
     """
-    Dataset class for satellite image time series data.
+    Dataset class for satellite image time series data from pd.DataFrame.
 
     Processes input DataFrame into tensors suitable for training machine learning models, including data normalization
     and computation of sample weights.
@@ -115,10 +117,53 @@ class SitsDataset(torch.utils.data.Dataset):
         return sample
 
 
+class SitsDatasetFromFormerFormat(object):
+    def __init__(
+        self,
+        folder_path,
+        max_seq_len,
+        transform=None,
+    ):
+        filenames = sorted(pathlib.Path(folder_path).glob("*.npz"))
+
+        self.xs = np.zeros((len(filenames) * 25, max_seq_len, 10), dtype=np.half)
+        self.doys = np.zeros((len(filenames) * 25, max_seq_len), dtype=np.int16)
+        self.transform = transform
+
+        for id, filename in enumerate(tqdm(filenames)):
+            data = np.load(filename)
+            ts = data["ts"]  # Shape: (seq_len, 10, 5, 5)
+            doy = data["doy"]  # Shape: (seq_len,)
+
+            seq_len = ts.shape[0]
+            if seq_len > max_seq_len:
+                seq_len = max_seq_len
+
+            ts_reshaped = ts[:seq_len].transpose(2, 3, 0, 1).reshape(-1, seq_len, 10)
+            doy_replicated = np.tile(doy[:seq_len], (25, 1))
+
+            start_idx = id * 25
+            end_idx = start_idx + 25
+
+            self.xs[start_idx:end_idx, :seq_len, :] = ts_reshaped
+            self.doys[start_idx:end_idx, :seq_len] = doy_replicated
+
+    def __len__(self) -> int:
+        return self.ys.shape[0]
+
+    def __getitem__(self, idx: int) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
+        sample = {"doy": self.doys[idx], "x": self.xs[idx], "y": 0}
+
+        if self.transform:
+            sample = self.transform(sample)
+
+        return sample
+
+
 if __name__ == "__main__":
     import pandas as pd
 
     whole_df = pd.read_parquet("data/california_sits_bert_original.parquet")
     train_df = whole_df[whole_df["use_bert"] == 0].reset_index(drop=True)
-    train_dataset = SitsDataset(train_df, max_seq_len=45)
+    train_dataset = SitsDatasetFromDataframe(train_df, max_seq_len=45)
     print(train_dataset[0])
