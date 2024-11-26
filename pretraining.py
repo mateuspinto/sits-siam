@@ -89,8 +89,8 @@ class TransformerClassifier(pl.LightningModule):
         super(TransformerClassifier, self).__init__()
         self.backbone = TransformerBackbone(max_seq_len=max_seq_len)
         self.bottleneck = PoolingBottleneck()
-        self.projection_head = SimSiamProjectionHead(128, 512, 128)
-        self.prediction_head = SimSiamPredictionHead(128, 64, 128)
+        self.projection_head = SimSiamProjectionHead(128, 512, 1024)
+        self.prediction_head = SimSiamPredictionHead(1024, 512, 1024)
 
         self.criterion = NegativeCosineSimilarity()
 
