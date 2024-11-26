@@ -118,19 +118,16 @@ class SitsDatasetFromDataframe(torch.utils.data.Dataset):
 
 
 class SitsDatasetFromFormerFormat(object):
-    def __init__(
-        self,
-        folder_path,
-        max_seq_len,
-        transform=None,
-    ):
+    def __init__(self, folder_path, max_seq_len, transform=None, limit=None):
         filenames = sorted(pathlib.Path(folder_path).glob("*.npz"))
 
-        self.xs = np.zeros((len(filenames) * 25, max_seq_len, 10), dtype=np.half)
-        self.doys = np.zeros((len(filenames) * 25, max_seq_len), dtype=np.int16)
+        size = len(filenames) if limit is None else limit
+        self.xs = np.zeros((size * 25, max_seq_len, 10), dtype=np.half)
+        self.doys = np.zeros((size * 25, max_seq_len), dtype=np.int16)
         self.transform = transform
 
-        for id, filename in enumerate(tqdm(filenames)):
+        for id in tqdm(range(size)):
+            filename = filenames[id]
             data = np.load(filename)
             ts = data["ts"]  # Shape: (seq_len, 10, 5, 5)
             doy = data["doy"]  # Shape: (seq_len,)
