@@ -159,7 +159,7 @@ class SitsDatasetFromFormerFormat(torch.utils.data.Dataset):
         return sample
 
 
-class SitsDatasetFromNpz(torch.utils.data.Dataset):
+class SitsPretrainDatasetFromNpz(torch.utils.data.Dataset):
     def __init__(
         self, npz_dir: Union[pathlib.Path, str], world_size: int = 1, transform=None
     ):
@@ -218,10 +218,10 @@ class SitsDatasetFromNpz(torch.utils.data.Dataset):
         return sample
 
     def __add__(self, other):
-        if not isinstance(other, SitsDatasetFromNpz):
-            raise ValueError("Can only add SitsDatasetFromNpz objects together")
+        if not isinstance(other, SitsPretrainDatasetFromNpz):
+            raise ValueError("Can only add SitsPretrainDatasetFromNpz objects together")
 
-        combined_dataset = SitsDatasetFromNpz(
+        combined_dataset = SitsPretrainDatasetFromNpz(
             npz_dir=pathlib.Path("."), world_size=self.world_size
         )
         combined_dataset.ts = np.concatenate((self.ts, other.ts), axis=0)
