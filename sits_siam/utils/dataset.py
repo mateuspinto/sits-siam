@@ -5,6 +5,8 @@ import pathlib
 import numpy as np
 import torch
 import pandas as pd
+from typing import Union
+import os
 
 
 class SitsDatasetFromDataframe(torch.utils.data.Dataset):
@@ -117,7 +119,7 @@ class SitsDatasetFromDataframe(torch.utils.data.Dataset):
         return sample
 
 
-class SitsDatasetFromFormerFormat(object):
+class SitsDatasetFromFormerFormat(torch.utils.data.Dataset):
     def __init__(self, folder_path, max_seq_len, transform=None, limit=None):
         filenames = sorted(pathlib.Path(folder_path).glob("*.npz"))
 
@@ -155,6 +157,76 @@ class SitsDatasetFromFormerFormat(object):
             sample = self.transform(sample)
 
         return sample
+
+
+class SitsDatasetFromNpz(torch.utils.data.Dataset):
+    def __init__(
+        self, npz_dir: Union[pathlib.Path, str], world_size: int = 1, transform=None
+    ):
+        if isinstance(npz_dir, str):
+            npz_dir = pathlib.Path(npz_dir)
+
+        self.transform = transform
+        # Detect the local rank from the environment variable
+        local_rank = int(os.getenv("LOCAL_RANK", 0))
+        self.local_rank = local_rank
+        self.world_size = world_size
+
+        # List all .npz files and ensure divisibility by world_size
+        self.npz_files = sorted(npz_dir.glob("*.npz"))
+        total_files = len(self.npz_files)
+
+        # Adjust the number of files to be divisible by world_size
+        if total_files % world_size != 0:
+            total_files = (total_files // world_size) * world_size
+            self.npz_files = self.npz_files[:total_files]
+
+        files_per_gpu = total_files // world_size
+
+        # Assign a subset of files to each GPU
+        start_file_idx = local_rank * files_per_gpu
+        end_file_idx = start_file_idx + files_per_gpu
+        self.npz_files = self.npz_files[start_file_idx:end_file_idx]
+
+        # Preallocate arrays for 'ts' and 'doys'
+        num_samples_per_file = 100000 * 25  # Based on your assumption
+        total_samples = num_samples_per_file * len(self.npz_files)
+        self.ts = np.zeros((total_samples, 45, 10), dtype=np.float16)
+        self.doys = np.zeros((total_samples, 45), dtype=np.int16)
+
+        # Load data into RAM for this GPU
+        for n, npz_file_path in tqdm(
+            enumerate(self.npz_files),
+            total=len(self.npz_files),
+            desc=f"Loading dataset into RAM on GPU {local_rank}...",
+        ):
+            data = np.load(npz_file_path)
+            start_idx = n * num_samples_per_file
+            end_idx = start_idx + num_samples_per_file
+            self.ts[start_idx:end_idx] = data["ts"].astype(np.float16)
+            self.doys[start_idx:end_idx] = data["doys"].astype(np.int16)
+
+    def __len__(self):
+        return len(self.ts)
+
+    def __getitem__(self, idx: int):
+        sample = {"x": self.ts[idx], "doy": self.doys[idx]}
+
+        if self.transform:
+            sample = self.transform(sample)
+
+        return sample
+
+    def __add__(self, other):
+        if not isinstance(other, SitsDatasetFromNpz):
+            raise ValueError("Can only add SitsDatasetFromNpz objects together")
+
+        combined_dataset = SitsDatasetFromNpz(
+            npz_dir=pathlib.Path("."), world_size=self.world_size
+        )
+        combined_dataset.ts = np.concatenate((self.ts, other.ts), axis=0)
+        combined_dataset.doys = np.concatenate((self.doys, other.doys), axis=0)
+        return combined_dataset
 
 
 if __name__ == "__main__":

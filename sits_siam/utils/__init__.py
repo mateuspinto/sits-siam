@@ -1,1 +1,5 @@
-from .dataset import SitsDatasetFromDataframe, SitsDatasetFromFormerFormat
+from .dataset import (
+    SitsDatasetFromDataframe,
+    SitsDatasetFromFormerFormat,
+    SitsDatasetFromNpz,
+)
