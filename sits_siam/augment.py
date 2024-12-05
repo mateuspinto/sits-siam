@@ -240,6 +240,19 @@ class Normalize:
         return sample
 
 
+class IncreaseSequenceLength:
+    def __init__(self, max_sequence_length):
+        self.max_sequence_length = max_sequence_length
+
+    def call(self, sample):
+        new_ts = np.zeros(
+            (self.max_sequence_length, sample["ts"].shape[1]), dtype=np.half
+        )
+        new_ts[: sample["ts"].shape[0]] = sample["ts"]
+        sample["ts"] = new_ts
+        return sample
+
+
 class ToPytorchTensor:
     def __call__(self, sample):
         for key, value in sample.items():
