@@ -229,6 +229,37 @@ class SitsPretrainDatasetFromNpz(torch.utils.data.Dataset):
         return combined_dataset
 
 
+class SitsFinetuneDatasetFromNpz(torch.utils.data.Dataset):
+    def __init__(self, npz_file: Union[pathlib.Path, str], transform=None):
+        if isinstance(npz_file, str):
+            npz_file = pathlib.Path(npz_file)
+
+        data = np.load(npz_file)
+        self.ts = data["ts"].astype(np.float16)
+        self.doys = data["doys"].astype(np.int16)
+        self.ys = data["ys"].astype(np.int16)
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.ts)
+
+    def __getitem__(self, idx: int):
+        sample = {"x": self.ts[idx], "doy": self.doys[idx], "y": self.ys[idx]}
+
+        if self.transform:
+            sample = self.transform(sample)
+
+        return sample
+
+    @property
+    def num_classes(self):
+        return np.max(self.ys) + 1
+
+    @property
+    def sequence_length(self):
+        return self.ts.shape[1]
+
+
 if __name__ == "__main__":
     import pandas as pd
 
