@@ -245,11 +245,11 @@ class IncreaseSequenceLength:
         self.max_sequence_length = max_sequence_length
 
     def __call__(self, sample):
-        new_ts = np.zeros(
-            (self.max_sequence_length, sample["ts"].shape[1]), dtype=np.half
+        new_x = np.zeros(
+            (self.max_sequence_length, sample["x"].shape[1]), dtype=np.half
         )
-        new_ts[: sample["ts"].shape[0]] = sample["ts"]
-        sample["ts"] = new_ts
+        new_x[: sample["x"].shape[0]] = sample["x"]
+        sample["x"] = new_x
         return sample
 
 
