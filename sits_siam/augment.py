@@ -3,10 +3,67 @@ import random
 import torch
 
 
+def random_masking(ts, ts_length, seq_len, dimension):
+    ts_masking = ts.copy()
+    mask = np.zeros((seq_len,), dtype=int)
+
+    for i in range(ts_length):
+        prob = random.random()
+        if prob < 0.15:
+            prob /= 0.15
+            mask[i] = 1
+
+            if prob < 0.5:
+                ts_masking[i, :] += np.random.uniform(
+                    low=-0.5, high=0, size=(dimension,)
+                )
+
+            else:
+                ts_masking[i, :] += np.random.uniform(
+                    low=0, high=0.5, size=(dimension,)
+                )
+
+    return ts_masking, mask
+
+
+# ---------------------------- Cloud and Cloud Shadow Augmentation --------------
+
+
+class RandomCloudAugmentation:
+    def __init__(self, probability=0.5):
+        self.probability = probability
+
+    def __call__(self, sample):
+        if np.random.rand() <= self.probability:
+            x = sample["x"]
+            doy = sample["doy"]
+            x, _ = random_masking(
+                x, x.shape[0] - np.sum(doy == 0), x.shape[0], x.shape[1]
+            )
+            sample["x"] = x
+
+        return sample
+
+
+class AddCorruptedSample:
+    def __call__(self, sample):
+        x = sample["x"]
+        doy = sample["doy"]
+        corrupted_x, corrupted_mask = random_masking(
+            x, x.shape[0] - np.sum(doy == 0), x.shape[0], x.shape[1]
+        )
+        sample["corrupted_x"] = corrupted_x
+        sample["corrupted_mask"] = corrupted_mask
+        return sample
+
+
 # ---------------------------- Spectral augmentation ----------------------------
 class RandomChanSwapping:
+    def __init__(self, probability=0.5):
+        self.probability = probability
+
     def __call__(self, sample):
-        if np.random.rand() < 0.5:
+        if np.random.rand() <= self.probability:
             x = sample["x"]
             s_idx = random.sample(range(x.shape[1]), 2)
             idx = list(range(x.shape[1]))
@@ -19,8 +76,11 @@ class RandomChanSwapping:
 
 
 class RandomChanRemoval:
+    def __init__(self, probability=0.5):
+        self.probability = probability
+
     def __call__(self, sample):
-        if np.random.rand() < 0.5:
+        if np.random.rand() <= self.probability:
             x = sample["x"]
             s_idx = random.sample(range(x.shape[1]), 2)
             idx = list(range(x.shape[1]))
@@ -32,29 +92,32 @@ class RandomChanRemoval:
 
 
 class RandomAddNoise:
-    def __init__(self, max_noise=0.05, noise_prob=0.5):
+    def __init__(self, max_noise=0.05, noise_prob=0.5, probability=0.5):
         self.max_noise = max_noise
         self.noise_prob = noise_prob
+        self.probability = probability
 
     def __call__(self, sample):
-        x = sample["x"]
-        t, c = x.shape
+        if np.random.rand() <= self.probability:
+            x = sample["x"]
+            t, c = x.shape
 
-        noise_mask = np.random.rand(t, 1) < self.noise_prob
-        noise = np.random.uniform(-self.max_noise, self.max_noise, size=(t, c))
-        x = x + noise_mask * noise
+            noise_mask = np.random.rand(t, 1) < self.noise_prob
+            noise = np.random.uniform(-self.max_noise, self.max_noise, size=(t, c))
+            x = x + noise_mask * noise
 
-        sample["x"] = x
+            sample["x"] = x
         return sample
 
 
 # ---------------------------- Temporal augmentation ----------------------------
 class RandomTempSwapping:
-    def __init__(self, max_distance=-1):
+    def __init__(self, max_distance=-1, probability=0.5):
         self.max_distance = max_distance
+        self.probability = probability
 
     def __call__(self, sample):
-        if np.random.rand() < 0.5:
+        if np.random.rand() <= self.probability:
             x = sample["x"]
             length = x.shape[0]
             idx = list(range(length))
@@ -63,15 +126,11 @@ class RandomTempSwapping:
                 s_idx = random.sample(range(length), 2)
             else:
                 i = random.randrange(length)
-
                 min_j = max(0, i - self.max_distance)
                 max_j = min(length - 1, i + self.max_distance)
-
                 possible_js = list(range(min_j, max_j + 1))
                 possible_js.remove(i)
-
                 j = random.choice(possible_js)
-
                 s_idx = [i, j]
 
             idx[s_idx[0]], idx[s_idx[1]] = idx[s_idx[1]], idx[s_idx[0]]
@@ -82,11 +141,12 @@ class RandomTempSwapping:
 
 
 class RandomTempShift:
-    def __init__(self, max_shift=30):
+    def __init__(self, max_shift=30, probability=0.5):
         self.max_shift = max_shift
+        self.probability = probability
 
     def __call__(self, sample):
-        if np.random.rand() < 0.5:
+        if np.random.rand() <= self.probability:
             x = sample["x"]
             shift = int(np.clip(np.random.randn() * 0.3, -1, 1) * self.max_shift / 5)
             x = np.roll(x, shift, axis=0)
@@ -96,24 +156,29 @@ class RandomTempShift:
 
 
 class RandomTempRemoval:
+    def __init__(self, probability=0.5):
+        self.probability = probability
+
     def __call__(self, sample):
-        x = sample["x"]
-        doy = sample["doy"]
-        mask = np.array([random.random() >= 0.15 for _ in range(x.shape[0])])
+        if np.random.rand() <= self.probability:
+            x = sample["x"]
+            doy = sample["doy"]
+            mask = np.array([random.random() >= 0.15 for _ in range(x.shape[0])])
 
-        x_kept = x[mask]
-        doy_kept = doy[mask]
+            x_kept = x[mask]
+            doy_kept = doy[mask]
 
-        num_pad = x.shape[0] - x_kept.shape[0]
+            num_pad = x.shape[0] - x_kept.shape[0]
 
-        x_pad = np.zeros((num_pad,) + x.shape[1:], dtype=x.dtype)
-        doy_pad = np.zeros((num_pad,) + doy.shape[1:], dtype=doy.dtype)
+            x_pad = np.zeros((num_pad,) + x.shape[1:], dtype=x.dtype)
+            doy_pad = np.zeros((num_pad,) + doy.shape[1:], dtype=doy.dtype)
 
-        x_new = np.concatenate((x_kept, x_pad), axis=0)
-        doy_new = np.concatenate((doy_kept, doy_pad), axis=0)
+            x_new = np.concatenate((x_kept, x_pad), axis=0)
+            doy_new = np.concatenate((doy_kept, doy_pad), axis=0)
 
-        sample["x"] = x_new
-        sample["doy"] = doy_new
+            sample["x"] = x_new
+            sample["doy"] = doy_new
+
         return sample
 
 

@@ -21,7 +21,7 @@ from print_color import print
 
 from sits_siam.backbone import TransformerBackbone
 from sits_siam.head import BertHead, ClassifierHead
-from sits_siam.utils import SitsDatasetFromDataframe
+from sits_siam.utils import SitsFinetuneDatasetFromNpz
 from sits_siam.bottleneck import PoolingBottleneck, NDVIWord2VecBottleneck
 from sits_siam.augment import (
     AddNDVIWeights,
@@ -99,32 +99,21 @@ val_transforms = Pipeline(
     ]
 )
 
-whole_df = pd.read_parquet("data/california_sits_bert_original.parquet")
-
-train_df = whole_df[whole_df.use_bert == 0].reset_index(drop=True)
-val_df = whole_df[whole_df.use_bert == 1].reset_index(drop=True)
-test_df = whole_df[whole_df.use_bert == 2].reset_index(drop=True)
-
-train_dataset = SitsDatasetFromDataframe(
-    train_df, max_seq_len=45, transform=train_transforms
+train_dataset = SitsFinetuneDatasetFromNpz(
+    "data/former_npz/train_former.npz", transform=train_transforms
 )
-val_dataset = SitsDatasetFromDataframe(val_df, max_seq_len=45, transform=val_transforms)
-test_dataset = SitsDatasetFromDataframe(
-    test_df, max_seq_len=45, transform=val_transforms
+val_dataset = SitsFinetuneDatasetFromNpz(
+    "data/former_npz/val_former.npz", transform=val_transforms
+)
+test_dataset = SitsFinetuneDatasetFromNpz(
+    "data/former_npz/test_former.npz", transform=val_transforms
 )
 
-print(
-    f"Train df={len(train_dataset)}, Val df={len(val_dataset)}, Test df={len(test_dataset)}"
-)
-
-del train_df
-del val_df
-del test_df
-del whole_df
+print("Num classes:", train_dataset.num_classes)
 
 
 class TransformerClassifier(pl.LightningModule):
-    def __init__(self, max_seq_len=40, num_classes=13):
+    def __init__(self, max_seq_len=40, num_classes=15):
         super(TransformerClassifier, self).__init__()
         self.backbone = TransformerBackbone(max_seq_len=max_seq_len)
         self.bottleneck = PoolingBottleneck()
@@ -199,18 +188,18 @@ class TransformerClassifier(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        optimizer = Adam(self.parameters(), lr=2e-4)
+        optimizer = Adam(self.parameters(), lr=1e-3)
         return optimizer
 
 
 train_dataloader = torch.utils.data.DataLoader(
-    train_dataset, batch_size=1024, shuffle=True
+    train_dataset, batch_size=2048, shuffle=True
 )
 val_dataloader = torch.utils.data.DataLoader(
-    val_dataset, batch_size=1024, shuffle=False
+    val_dataset, batch_size=2048, shuffle=False
 )
 test_dataloader = torch.utils.data.DataLoader(
-    val_dataset, batch_size=1024, shuffle=False
+    val_dataset, batch_size=2048, shuffle=False
 )
 
 early_stopping = EarlyStopping(monitor="val_loss", patience=20, mode="min")
