@@ -315,6 +315,10 @@ class IncreaseSequenceLength:
         )
         new_x[: sample["x"].shape[0]] = sample["x"]
         sample["x"] = new_x
+
+        new_doy = np.zeros((self.max_sequence_length), dtype=np.int16)
+        new_doy[: sample["doy"].shape[0]] = sample["doy"]
+        sample["doy"] = new_doy
         return sample
 
 
