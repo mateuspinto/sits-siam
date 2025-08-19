@@ -3,4 +3,5 @@ from .dataset import (
     SitsDatasetFromFormerFormat,
     SitsPretrainDatasetFromNpz,
     SitsFinetuneDatasetFromNpz,
+    AgriGEELiteDataset,
 )

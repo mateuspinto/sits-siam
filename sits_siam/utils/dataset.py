@@ -3,6 +3,8 @@ from tqdm.std import tqdm
 
 import pathlib
 import numpy as np
+import geopandas as gpd
+import pandas as pd
 import torch
 import pandas as pd
 from typing import Union
@@ -258,6 +260,103 @@ class SitsFinetuneDatasetFromNpz(torch.utils.data.Dataset):
     @property
     def sequence_length(self):
         return self.ts.shape[1]
+
+
+class AgriGEELiteDataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        gdf: str | gpd.GeoDataFrame,
+        sits_df: str | pd.DataFrame,
+        band_order=None,
+        timestamp_processing="doy",
+        transform=None,
+    ):
+        if isinstance(gdf, str):
+            self.gdf = gpd.read_parquet(gdf)
+        else:
+            self.gdf = gdf.copy()
+
+        if isinstance(sits_df, str):
+            self.sits_df = pd.read_parquet(sits_df)
+        else:
+            self.sits_df = sits_df.copy()
+
+        self.gdf = self.gdf.reset_index().rename(columns={"index": "indexnum"})
+        self.transform = transform
+
+        self.band_order = (
+            band_order
+            if band_order
+            else [
+                "blue",
+                "green",
+                "red",
+                "re1",
+                "re2",
+                "re3",
+                "nir",
+                "re4",
+                "swir1",
+                "swir2",
+            ]
+        )
+
+        self.timestamp_processing = timestamp_processing
+        self.max_seq_len = self.sits_df.groupby("indexnum").size().max()
+
+        self.sits_df["timestamp"] = pd.to_datetime(self.sits_df["timestamp"])
+        self.sequence_length = self.max_seq_len
+
+        if self.timestamp_processing == "doy":
+            self.sits_df["timestamp"] = self.sits_df["timestamp"].dt.dayofyear
+        elif self.timestamp_processing == "days_after_start":
+            start_map = self.gdf.set_index("indexnum")["start_date"]
+            starts = self.sits_df["indexnum"].map(start_map)
+            self.sits_df["timestamp"] = (self.sits_df["timestamp"] - starts).dt.days
+            self.sits_df["timestamp"] = self.sits_df["timestamp"] + 1
+
+        self.xs, self.doys = self.to_numpy_arrays_wo_for()
+        self.ys = self.gdf["crop_number"].values
+        self.num_classes = int(self.gdf["crop_class"].nunique())
+
+    def to_numpy_arrays_wo_for(self):
+        n_samples = len(self.gdf)
+        n_bands = len(self.band_order)
+
+        X = np.full((n_samples, self.max_seq_len, n_bands), 0, dtype=np.float16)
+        T = np.full((n_samples, self.max_seq_len), 0, dtype=np.int16)
+
+        sits_sorted = self.sits_df.sort_values(["indexnum", "timestamp"]).copy()
+
+        index_map = {idx: i for i, idx in enumerate(self.gdf["indexnum"].values)}
+        sits_sorted["parcel_idx"] = sits_sorted["indexnum"].map(index_map)
+
+        sits_sorted["seq_idx"] = sits_sorted.groupby("indexnum").cumcount()
+
+        sits_sorted = sits_sorted[sits_sorted["seq_idx"] < self.max_seq_len]
+
+        band_values = sits_sorted[self.band_order].to_numpy()
+
+        time_values = sits_sorted["timestamp"].to_numpy()
+
+        pi = sits_sorted["parcel_idx"].to_numpy()
+        si = sits_sorted["seq_idx"].to_numpy()
+
+        X[pi, si, :] = band_values
+        T[pi, si] = time_values
+
+        return X, T
+
+    def __len__(self) -> int:
+        return self.ys.shape[0]
+
+    def __getitem__(self, idx: int):
+        sample = {"doy": self.doys[idx], "x": self.xs[idx], "y": self.ys[idx]}
+
+        if self.transform:
+            sample = self.transform(sample)
+
+        return sample
 
 
 if __name__ == "__main__":
