@@ -321,6 +321,14 @@ class IncreaseSequenceLength:
         sample["doy"] = new_doy
         return sample
 
+class LimitSequenceLength:
+    def __init__(self, max_sequence_length):
+        self.max_sequence_length = max_sequence_length
+
+    def __call__(self, sample):
+        sample["x"] = sample["x"][: self.max_sequence_length]
+        sample["doy"] = sample["doy"][: self.max_sequence_length]
+        return sample
 
 class ToPytorchTensor:
     def __call__(self, sample):
