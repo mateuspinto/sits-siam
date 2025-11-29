@@ -493,6 +493,13 @@ class AgriGEELiteDataset(torch.utils.data.Dataset):
 
         return class_names
 
+    def get_weights_for_WeightedRandomSampler(self) -> torch.Tensor:
+        targets = self.ys
+        classes, counts = np.unique(targets, return_counts=True)
+        class_weights = 1.0 / counts
+        weight_map = dict(zip(classes, class_weights))
+        sample_weights = np.array([weight_map[t] for t in targets])
+        return torch.from_numpy(sample_weights).double()
 
 if __name__ == "__main__":
     import pandas as pd
