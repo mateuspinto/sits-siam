@@ -10,6 +10,7 @@ import pandas as pd
 from typing import Union
 import os
 
+from sklearn.utils.class_weight import compute_class_weight
 
 class SitsDatasetFromDataframe(torch.utils.data.Dataset):
     """
@@ -236,6 +237,7 @@ class SitsFinetuneDatasetFromNpz(torch.utils.data.Dataset):
         if isinstance(npz_file, str):
             npz_file = pathlib.Path(npz_file)
 
+        self.npz_file = npz_file
         data = np.load(npz_file)
         self.ts = data["ts"].astype(np.float16)
         self.doys = data["doys"].astype(np.int16)
@@ -260,6 +262,62 @@ class SitsFinetuneDatasetFromNpz(torch.utils.data.Dataset):
     @property
     def sequence_length(self):
         return self.ts.shape[1]
+
+    def get_class_weights(self) -> torch.Tensor:        
+            y_labels = self.ys.flatten() 
+            classes = np.unique(y_labels)
+            
+            weights = compute_class_weight(
+                class_weight="balanced",
+                classes=classes,
+                y=y_labels
+            )
+    
+            class_weights_tensor = torch.tensor(weights, dtype=torch.float32, device="cpu")             
+            return class_weights_tensor
+
+    def get_class_names(self) -> list[str]:
+            full_path_str = str(self.npz_file).lower()
+            num_classes = self.num_classes
+            class_names_full: list[str]
+            region_name: str
+    
+            if 'texas' in full_path_str:
+                region_name = 'texas'
+                class_names_full = [
+                    'Corn',
+                    'Cotton',
+                    'Oats',
+                    'Pasture',
+                    'Rice',
+                    'Sorghum',
+                    'Wheat'
+                ]
+            elif 'california' in full_path_str:
+                region_name = 'california'
+                class_names_full = [
+                    'Alfalfa',
+                    'Almonds',
+                    'Citrus',
+                    'Corn',
+                    'Cotton',
+                    'Grapes',
+                    'Pasture',
+                    'Pistachios',
+                    'Rice',
+                    'Tomatoes',
+                    'Walnuts',
+                    'Wildflowers',
+                    'Wheat and Corn',
+                    'Wheat'
+                ]
+            else:
+                raise Exception(f"Caminho do arquivo '{self.npz_file}' não contém 'texas' nem 'california' para identificar os nomes das classes.")
+                
+            if num_classes > len(class_names_full):
+                raise Exception(f"O dataset possui {num_classes} classes, mas o mapeamento de nomes de classe para '{region_name}' suporta apenas {len(class_names_full)}.")
+                
+            return class_names_full[:num_classes]
 
 
 class AgriGEELiteDataset(torch.utils.data.Dataset):
@@ -320,6 +378,48 @@ class AgriGEELiteDataset(torch.utils.data.Dataset):
         self.num_classes = int(self.gdf["crop_class"].nunique())
 
     def to_numpy_arrays_wo_for(self):
+        n_samples = len(self.gdf) # O tamanho esperado de parcelas (71173 no Treino)
+        n_bands = len(self.band_order)
+
+        X = np.full((n_samples, self.max_seq_len, n_bands), 0, dtype=np.float16)
+        T = np.full((n_samples, self.max_seq_len), 0, dtype=np.int16)
+
+        sits_sorted = self.sits_df.sort_values(["indexnum", "timestamp"]).copy()
+
+        # 1. Cria o mapa de índice da parcela
+        index_map = {idx: i for i, idx in enumerate(self.gdf["indexnum"].values)}
+        
+        # 2. Realiza o mapeamento para obter o índice do array X
+        sits_sorted["parcel_idx"] = sits_sorted["indexnum"].map(index_map)
+        
+        # --- NOVO: REMOVER LINHAS COM VALORES NaN APÓS O MAPA ---
+        # Se sits_df tem indexnum que não está em gdf, o map retorna NaN.
+        # Precisamos remover essas linhas antes de converter para int.
+        sits_sorted.dropna(subset=["parcel_idx"], inplace=True)
+        # --------------------------------------------------------
+
+        # 3. Calcula o índice da sequência (cumcount)
+        sits_sorted["seq_idx"] = sits_sorted.groupby("indexnum").cumcount()
+
+        # 4. Filtra o excesso de observações na série temporal
+        sits_sorted = sits_sorted[sits_sorted["seq_idx"] < self.max_seq_len]
+
+        # 5. Extrai e converte os arrays de índice
+        band_values = sits_sorted[self.band_order].to_numpy()
+        time_values = sits_sorted["timestamp"].to_numpy()
+
+        # Agora, a conversão para inteiro deve ser segura,
+        # pois removemos os valores NaN.
+        pi = sits_sorted["parcel_idx"].to_numpy().astype(int)
+        si = sits_sorted["seq_idx"].to_numpy().astype(int)
+
+        # 6. Preenche os arrays NumPy
+        X[pi, si, :] = band_values
+        T[pi, si] = time_values
+
+        return X, T
+    
+    def _to_numpy_arrays_wo_for(self):
         n_samples = len(self.gdf)
         n_bands = len(self.band_order)
 
@@ -347,6 +447,23 @@ class AgriGEELiteDataset(torch.utils.data.Dataset):
 
         return X, T
 
+    def get_class_weights(self) -> torch.Tensor:
+        # self.ys já é um array NumPy de rótulos (crop_number)
+        y_labels = self.ys.flatten()
+        classes = np.unique(y_labels)
+
+        # Calcula os pesos de classe. 'balanced' ajusta inversamente
+        # a frequência da classe no conjunto de dados.
+        weights = compute_class_weight(
+            class_weight="balanced",
+            classes=classes,
+            y=y_labels
+        )
+
+        # Converte o array NumPy de pesos em um tensor PyTorch
+        class_weights_tensor = torch.tensor(weights, dtype=torch.float32, device="cpu")
+        return class_weights_tensor
+
     def __len__(self) -> int:
         return self.ys.shape[0]
 
@@ -357,6 +474,24 @@ class AgriGEELiteDataset(torch.utils.data.Dataset):
             sample = self.transform(sample)
 
         return sample
+
+    def get_class_names(self) -> list[str]:
+        """
+        Retorna uma lista de strings com os nomes das classes (crop_class)
+        ordenada pelo número da classe (crop_number).
+        """
+        # Cria um DataFrame de mapeamento com as colunas 'crop_number' e 'crop_class'
+        # e remove duplicatas para ter um mapeamento único.
+        mapping_df = self.gdf[["crop_number", "crop_class"]].drop_duplicates()
+
+        # Ordena o DataFrame pelo 'crop_number' para garantir a ordem correta
+        # (onde 'crop_number' corresponde ao índice do tensor de pesos/saída).
+        mapping_df = mapping_df.sort_values(by="crop_number")
+
+        # Extrai os nomes das classes ordenados
+        class_names = mapping_df["crop_class"].tolist()
+
+        return class_names
 
 
 if __name__ == "__main__":

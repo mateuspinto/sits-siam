@@ -10,7 +10,7 @@ from lightly.models.modules.heads import SimSiamPredictionHead, SimSiamProjectio
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
 #from sits_siam.backbone import TransformerBackbone
-from sits_siam.utils import SitsFinetuneDatasetFromNpz
+from sits_siam.utils import SitsFinetuneDatasetFromNpz, SitsPretrainDatasetFromNpz
 #from sits_siam.bottleneck import PoolingBottleneck
 from sits_siam.augment import (
     RandomAddNoise,
@@ -53,13 +53,12 @@ class PositionalEncoding(nn.Module):
         self.register_buffer("pe", pe)
     
     def forward(self, positions):
-        return self.pe[positions]  # [batch, seq_len, d_model]
+        return self.pe[positions]
 
 class SITSBertClassifier(nn.Module):
     def __init__(
         self,
         num_features=10,
-        num_classes=13,
         seq_len=64,
         hidden=256,
         n_layers=3,
@@ -68,13 +67,10 @@ class SITSBertClassifier(nn.Module):
         max_len=366
     ):
         super().__init__()
-        # SBERT original: concat features + positional encoding
         self.embed_dim = hidden // 2
-
         self.input_proj = nn.Linear(num_features, self.embed_dim)
         self.pos_encoder = PositionalEncoding(self.embed_dim, max_len)
         
-        # O embedding final terá dimensão hidden (concatenação)
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
                 d_model=hidden,
@@ -86,29 +82,15 @@ class SITSBertClassifier(nn.Module):
             ),
             num_layers=n_layers
         )
-        
-        # Max pooling para classificação
-        #self.pool = nn.AdaptiveMaxPool1d(1)
-        # self.classifier = nn.Linear(hidden, num_classes)
+        self.pool = nn.AdaptiveMaxPool1d(1)
 
     def forward(self, x, doy, mask):
-        """
-        x: [batch, seq_len, num_features]
-        doy: [batch, seq_len]
-        mask: [batch, seq_len] (1=valido, 0=padding)
-        """
-        
-        feat_emb = self.input_proj(x)                     # [B, L, hidden//2]
-        pos_emb = self.pos_encoder(doy)                   # [B, L, hidden//2]
-        embed = torch.cat([feat_emb, pos_emb], dim=-1)    # [B, L, hidden]
-        # PyTorch usa mask: True=padded, False=valido
-        #src_key_padding_mask = (mask == 0)                # [B, L]
+        feat_emb = self.input_proj(x)
+        pos_emb = self.pos_encoder(doy)
+        embed = torch.cat([feat_emb, pos_emb], dim=-1)
         src_key_padding_mask = mask
         x_enc = self.transformer(embed, src_key_padding_mask=src_key_padding_mask)
-        # pooling ao longo do tempo (seq_len)
-        
-        #pooled = self.pool(x_enc.permute(0, 2, 1)).squeeze(-1) # [B, hidden]
-        #logits = self.classifier(pooled)
+        # Pooling foi movido para fora para que o KNN callback possa usar o backbone diretamente
         return x_enc
 
 aug_transform = Pipeline(
@@ -121,6 +103,7 @@ aug_transform = Pipeline(
         RandomTempRemoval(), #
         AddCorruptedSample(),
         AddMissingMask(),
+        Normalize(),
         ToPytorchTensor(),
     ]
 )
@@ -135,23 +118,25 @@ val_transform = Pipeline(
         # RandomTempRemoval(), #
         AddCorruptedSample(),
         AddMissingMask(),
+        Normalize(),
         ToPytorchTensor(),
     ]
 )
 
-train_dataset = SitsFinetuneDatasetFromNpz("data/texas_001_001_998/test.npz", transform=aug_transform)
-val_dataset = SitsFinetuneDatasetFromNpz("data/texas_001_001_998/val.npz", transform=val_transform)
+# train_dataset = SitsFinetuneDatasetFromNpz("data/california_001_001_998/test.npz", transform=aug_transform)
+train_dataset = SitsPretrainDatasetFromNpz("../pretrain_from_former", world_size=2, transform=val_transform)
+val_dataset = SitsFinetuneDatasetFromNpz("data/california_001_001_998/val.npz", transform=val_transform)
 
 
-knn_train_dataset = SitsFinetuneDatasetFromNpz("data/texas_001_001_998/train.npz", transform=val_transform)
-knn_val_dataset = SitsFinetuneDatasetFromNpz("data/texas_001_001_998/val.npz", transform=val_transform)
+knn_train_dataset = SitsFinetuneDatasetFromNpz("data/california_001_001_998/train.npz", transform=val_transform)
+knn_val_dataset = SitsFinetuneDatasetFromNpz("data/california_001_001_998/val.npz", transform=val_transform)
 
 class TransformerClassifier(pl.LightningModule):
-    def __init__(self, max_seq_len=140, max_epochs=100, batch_size=8*512, train_dataset_size=None, num_warmup_epochs=10, base_lr=1e-6, max_lr=1e-3, k=4, gamma=0.5):
+    def __init__(self, max_seq_len=140, max_epochs=100, batch_size=8*512, train_dataset_size=None, num_warmup_epochs=10, base_lr=1e-6, max_lr=1e-4, k=4, gamma=0.5):
         super(TransformerClassifier, self).__init__()
-        self.model = SITSBertClassifier(num_classes=13)
-        self.output_head = nn.Linear(256, 10)
+        self.backbone = SITSBertClassifier()
         self.pool = nn.AdaptiveMaxPool1d(1)
+        self.output_head = nn.Linear(256, 10)
 
         self.criterion = nn.MSELoss(reduction="none")
 
@@ -170,7 +155,7 @@ class TransformerClassifier(pl.LightningModule):
         doy = batch["doy"]
         mask = batch["mask"]
 
-        f = self.model(x, doy, mask)
+        f = self.backbone(x, doy, mask)
         f = self.pool(x_enc.permute(0, 2, 1)).squeeze(-1) # [B, hidden]
         return f
 
@@ -179,7 +164,7 @@ class TransformerClassifier(pl.LightningModule):
         doy = batch["doy"]
         mask = batch["mask"]
 
-        f = self.model(x, doy, mask)
+        f = self.backbone(x, doy, mask)
         f = self.output_head(f)
         return f
 
@@ -218,7 +203,8 @@ class TransformerClassifier(pl.LightningModule):
         #    self.parameters(), lr=0.001, momentum=0.9, weight_decay=5e-4
         #)
 
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
+        # optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.max_lr)
         # optimizer = Lamb(self.parameters(), lr=1e-4)
 
         train_steps_per_epoch = math.ceil(self.train_dataset_size / self.batch_size)
@@ -245,7 +231,7 @@ class TransformerClassifier(pl.LightningModule):
         }]
 
 batch_size = 4 * 512
-max_epochs = 200
+max_epochs = 300
 num_warmup_epochs = 20
 
 train_dataloader = torch.utils.data.DataLoader(
@@ -291,7 +277,7 @@ class KNNCallback(pl.Callback):
                 mask = batch["mask"].to(device)
                 y = batch["y"].to(device)
 
-                feats = pl_module.model(x, doy, mask)
+                feats = pl_module.backbone(x, doy, mask)
                 feats = pl_module.pool(feats.permute(0, 2, 1)).squeeze(-1)
                 train_feats.append(feats.cpu().numpy())
                 train_labels.append(y.cpu().numpy())
@@ -308,7 +294,7 @@ class KNNCallback(pl.Callback):
                 mask = batch["mask"].to(device)
                 y = batch["y"].to(device)
 
-                feats = pl_module.model(x, doy, mask)
+                feats = pl_module.backbone(x, doy, mask)
                 feats = pl_module.pool(feats.permute(0, 2, 1)).squeeze(-1)
                 val_feats.append(feats.cpu().numpy())
                 val_labels.append(y.cpu().numpy())
@@ -331,7 +317,7 @@ class KNNCallback(pl.Callback):
         
         pl_module.train()
         
-mlflow_logger = MLFlowLogger(experiment_name="TEXASRECONSTRUCT")
+mlflow_logger = MLFlowLogger(experiment_name="CALIFORNIARECONSTRUCT")
 knn_callback = KNNCallback(train_dataloader=knn_train_dataloader, val_dataloader=knn_val_dataloader, every_n_epochs=2, num_classes=13, k=5)
 checkpoint_callback = ModelCheckpoint(
     monitor="knn_f1_macro", filename="best_model", save_top_k=1, mode="max"
@@ -347,9 +333,10 @@ model = TransformerClassifier(max_epochs=max_epochs,
 )
 
 trainer.validate(model=model, dataloaders=val_dataloader)
-
 trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 model = TransformerClassifier.load_from_checkpoint(checkpoint_callback.best_model_path)
+
+torch.save(model.backbone.state_dict(), "bert_all_new_bert.pth")
 
 # Saving pytorch model backbone state dict
 # torch.save(model.backbone.state_dict(), "weights/fastsiam_texas.pth")
