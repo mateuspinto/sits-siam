@@ -55,9 +55,14 @@ from sits_siam.utils import AgriGEELiteDataset, SitsFinetuneDatasetFromNpz
 
 torch.set_float32_matmul_precision('high')
 
+DATASET = "brazil_sampled_70_15_15"
 BATCH_SIZE = 8 * 512
 MAX_EPOCHS_P1 = 100
 MAX_EPOCHS_P2 = 100
+PRETRAIN_PATH = ""
+
+TAGS = {"dataset": DATASET, "batch_size": BATCH_SIZE, "max_epochs_p1": MAX_EPOCHS_P1, "max_epochs_p2": MAX_EPOCHS_P2, "pretrain_path": PRETRAIN_PATH}
+RUN_NAME = "-".join(str(value) for value in TAGS.values())
 
 def setup_seed():
     seed = 42
@@ -235,6 +240,10 @@ class Phase1_Classifier(pl.LightningModule):
         self.log("p1_train_acc", self.train_acc(logits, y), prog_bar=True)
         return loss
 
+    def on_train_epoch_end(self):
+        lr = self.trainer.optimizers[0].param_groups[0]["lr"]
+        self.log("p1_lr", lr, prog_bar=True, on_epoch=True, sync_dist=True)
+
     def validation_step(self, batch, batch_idx):
         x, doy, mask, y = batch["x"], batch["doy"], batch["mask"], batch["y"].squeeze()
         logits, _ = self.forward(x, doy, mask)
@@ -340,6 +349,10 @@ class Phase2_ConfidNet(pl.LightningModule):
         self.log("p2_conf_loss", loss, prog_bar=True)
         return loss
 
+    def on_train_epoch_end(self):
+        lr = self.trainer.optimizers[0].param_groups[0]["lr"]
+        self.log("p2_lr", lr, prog_bar=True, on_epoch=True, sync_dist=True)
+
     def validation_step(self, batch, batch_idx):
         x, doy, mask, y = batch["x"], batch["doy"], batch["mask"], batch["y"].squeeze()
         
@@ -391,14 +404,14 @@ sample_weights = train_dataset.get_weights_for_WeightedRandomSampler()
 sampler = WeightedRandomSampler(
     weights=sample_weights,
     num_samples=len(sample_weights),
-    replacement=True # Importante: permite repetir amostras das classes raras
+    replacement=True
 )
 
 train_dataloader = torch.utils.data.DataLoader(
     train_dataset, 
     batch_size=BATCH_SIZE, 
-    sampler=sampler,   # <--- Adiciona o sampler aqui
-    shuffle=False,     # <--- OBRIGATÓRIO: shuffle deve ser False ao usar sampler
+    sampler=sampler,
+    shuffle=False,
     num_workers=12, 
     pin_memory=True
 )
@@ -420,14 +433,15 @@ model_phase1 = Phase1_Classifier(
 # Carregar pesos pré-treinados do SITS-BERT se houver
 # model_phase1.backbone.load_state_dict(torch.load("siam_texas_new_bert.pth"))
 
-mlflow_logger = MLFlowLogger(experiment_name="confidnet")
+mlflow_logger = MLFlowLogger(experiment_name=f"siam-{DATASET}", tags=TAGS, run_name=RUN_NAME)
 
 checkpoint_cb_p1 = ModelCheckpoint(monitor="p1_val_loss", filename="best_classifier", mode="min")
 trainer_p1 = pl.Trainer(
     max_epochs=MAX_EPOCHS_P1, 
     accelerator="gpu", 
     callbacks=[checkpoint_cb_p1],
-    logger=mlflow_logger
+    logger=mlflow_logger,
+    log_every_n_steps=5
 )
 
 trainer_p1.fit(model_phase1, train_dataloader, val_dataloader)
@@ -447,7 +461,8 @@ trainer_p2 = pl.Trainer(
     max_epochs=MAX_EPOCHS_P2, 
     accelerator="gpu", 
     callbacks=[checkpoint_cb_p2],
-    # logger=mlflow_logger
+    logger=mlflow_logger,
+    log_every_n_steps=5
 )
 
 trainer_p2.fit(model_phase2, train_dataloader, val_dataloader)
