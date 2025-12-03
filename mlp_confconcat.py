@@ -49,6 +49,7 @@ from sits_siam.augment import (
     Pipeline,
     IncreaseSequenceLength,
     LimitSequenceLength,
+    ReduceToMonthlyMeans,
     ToPytorchTensor,
 )
 from sits_siam.utils import AgriGEELiteDataset, SitsFinetuneDatasetFromNpz
@@ -81,63 +82,12 @@ def beautify_prints():
 setup_seed()
 beautify_prints()
 
-####################################### TRAINING #######################################
-
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=366):
-        super().__init__()
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        self.register_buffer("pe", pe)
-    
-    def forward(self, positions):
-        return self.pe[positions]
-
-class SITSBertClassifier(nn.Module):
-    def __init__(
-        self,
-        num_features=10,
-        hidden=256,
-        n_layers=3,
-        n_heads=8,
-        dropout=0.1,
-        max_len=366
-    ):
-        super().__init__()
-        self.embed_dim = hidden // 2
-        self.input_proj = nn.Linear(num_features, self.embed_dim)
-        self.pos_encoder = PositionalEncoding(self.embed_dim, max_len)
-        
-        self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=hidden,
-                nhead=n_heads,
-                dim_feedforward=hidden * 4,
-                dropout=dropout,
-                activation='gelu',
-                batch_first=True,
-            ),
-            num_layers=n_layers
-        )
-        self.pool = nn.AdaptiveMaxPool1d(1)
-
-    def forward(self, x, doy, mask):
-        feat_emb = self.input_proj(x)
-        pos_emb = self.pos_encoder(doy)
-        embed = torch.cat([feat_emb, pos_emb], dim=-1)
-        src_key_padding_mask = mask
-        x_enc = self.transformer(embed, src_key_padding_mask=src_key_padding_mask)
-
-        return x_enc
-
 transforms = Pipeline(
     [
         LimitSequenceLength(140),
         IncreaseSequenceLength(140),
         AddMissingMask(),
+        ReduceToMonthlyMeans(),
         Normalize(),
         ToPytorchTensor(),
     ]
@@ -152,6 +102,7 @@ aug_transforms = Pipeline(
         RandomTempRemoval(),
         RandomTempSwapping(max_distance=3),
         AddMissingMask(),
+        ReduceToMonthlyMeans(),
         Normalize(),
         ToPytorchTensor(),
     ]
@@ -200,21 +151,56 @@ test_dataset = AgriGEELiteDataset(
     gdf_test, "data/agl/df_sits.parquet", transform=transforms, timestamp_processing="days_after_start"
 )
 
+class SITS_MLP_Backbone(nn.Module):
+    def __init__(self, input_channels, time_steps=12, hidden_dim=256, dropout_rate=0.3):
+        super().__init__()
+        
+        input_dim = input_channels * time_steps
+        
+        self.flatten = nn.Flatten()
+        
+        # Bloco 1
+        self.layer1 = nn.Sequential(
+            nn.Linear(input_dim, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
+        )
+        
+        # Bloco 2
+        self.layer2 = nn.Sequential(
+            nn.Linear(512, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
+        )
+        
+        # Bloco 3 (Saída de Features Latentes)
+        self.layer3 = nn.Sequential(
+            nn.Linear(512, hidden_dim), # hidden_dim costuma ser 256
+            nn.ReLU() 
+        )
+
+    def forward(self, x, doy=None, mask=None):
+        # x: (Batch, Channels, 12) -> Flatten -> (Batch, Channels*12)
+        x = self.flatten(x)
+        
+        out1 = self.layer1(x)       # (Batch, 512)
+        out2 = self.layer2(out1)    # (Batch, 512)
+        out3 = self.layer3(out2)    # (Batch, 256)
+        
+        # Retorna lista com todas as saídas intermediárias
+        return [out1, out2, out3]
 
 class Phase1_Classifier(pl.LightningModule):
     def __init__(self, num_classes, train_dataset, max_epochs=100, batch_size=512, num_warmup_epochs=10, base_lr=1e-4):
         super().__init__()
         self.save_hyperparameters()
-
-        # Arquitetura de Classificação
-        self.backbone = SITSBertClassifier()
-        self.pool = nn.AdaptiveMaxPool1d(1)
+        self.backbone = SITS_MLP_Backbone(input_channels=10, time_steps=12, hidden_dim=256)
+        self.pool = nn.Identity() 
         self.classifier_layer = nn.Linear(256, num_classes)
 
-        # Loss
         self.criterion = nn.CrossEntropyLoss()
-        
-        
         self.train_acc = MulticlassAccuracy(num_classes=num_classes, average="micro")
         self.val_acc = MulticlassAccuracy(num_classes=num_classes, average="micro")
 
@@ -225,15 +211,16 @@ class Phase1_Classifier(pl.LightningModule):
         self.base_lr = base_lr
 
     def forward(self, x, doy, mask):
-        features = self.backbone(x, doy, mask)
-        pooled = self.pool(features.permute(0, 2, 1)).squeeze(-1)
+        features = self.backbone(x, None, None)[-1]
+        pooled = self.pool(features)
+        
         logits = self.classifier_layer(pooled)
 
         return logits, pooled
 
     def training_step(self, batch, batch_idx):
-        x, doy, mask, y = batch["x"], batch["doy"], batch["mask"], batch["y"].squeeze()
-        logits, _ = self.forward(x, doy, mask)
+        x, y = batch["x"], batch["y"].squeeze()
+        logits, _ = self.forward(x, None, None)
         
         loss = self.criterion(logits, y)
         self.log("p1_train_loss", loss, prog_bar=True)
@@ -245,8 +232,8 @@ class Phase1_Classifier(pl.LightningModule):
         self.log("p1_lr", lr, prog_bar=True, on_epoch=True, sync_dist=True)
 
     def validation_step(self, batch, batch_idx):
-        x, doy, mask, y = batch["x"], batch["doy"], batch["mask"], batch["y"].squeeze()
-        logits, _ = self.forward(x, doy, mask)
+        x, y = batch["x"], batch["y"].squeeze()
+        logits, _ = self.forward(x, None, None)
         
         loss = self.criterion(logits, y)
         self.log("p1_val_loss", loss, prog_bar=True, sync_dist=True)
@@ -286,7 +273,7 @@ class Phase1_Classifier(pl.LightningModule):
 
 
 class Phase2_ConfidNet(pl.LightningModule):
-    def __init__(self, pretrained_model: Phase1_Classifier, max_epochs=100, batch_size=512, train_dataset_size=None, num_warmup_epochs=10, base_lr=1e-4):
+    def __init__(self, pretrained_model: Phase1_Classifier, max_epochs=100, batch_size=512, train_dataset_size=None, num_warmup_epochs=10, base_lr=1e-4, projection_hidden_size=256, embedding_size=128, dropout=0.3):
         super().__init__()
         self.save_hyperparameters(ignore=['pretrained_model'])
 
@@ -294,6 +281,8 @@ class Phase2_ConfidNet(pl.LightningModule):
         self.pool = pretrained_model.pool
         self.classifier_layer = pretrained_model.classifier_layer
         
+        
+        # Congelar Backbone e Classificador
         self.backbone.eval()
         self.classifier_layer.eval()
         for param in self.backbone.parameters():
@@ -301,8 +290,26 @@ class Phase2_ConfidNet(pl.LightningModule):
         for param in self.classifier_layer.parameters():
             param.requires_grad = False
 
+        # --- CÁLCULO DO TAMANHO DA CONCATENAÇÃO ---
+        # Layer 1 (512) + Layer 2 (512) + Layer 3 (256) = 1280
+        concat_size = 512 + 512 + 256 
+        
+        # --- CAMADA DE PROJEÇÃO (Sua solicitação) ---
+        self.projection = nn.Sequential(
+            nn.Linear(concat_size, projection_hidden_size),
+            nn.BatchNorm1d(projection_hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout * 0.8),
+            nn.Linear(projection_hidden_size, embedding_size),
+            nn.BatchNorm1d(embedding_size),
+            nn.ReLU(),
+            nn.Dropout(dropout * 0.3)
+        )
+
+        # --- REDE DE CONFIANÇA (ConfidNet) ---
+        # A entrada agora é o `embedding_size` (saída da projeção), não mais 256
         self.confid_net = nn.Sequential(
-            nn.Linear(256, 400),
+            nn.Linear(embedding_size, 400),
             nn.ReLU(),
             nn.Linear(400, 400),
             nn.ReLU(),
@@ -322,19 +329,27 @@ class Phase2_ConfidNet(pl.LightningModule):
         self.base_lr = base_lr
 
     def forward(self, x, doy, mask):
-
         with torch.no_grad():
-            features = self.backbone(x, doy, mask)
-            pooled = self.pool(features.permute(0, 2, 1)).squeeze(-1)
+            # Obtém lista [out1 (512), out2 (512), out3 (256)]
+            all_features = self.backbone(x, doy, mask)
         
-        confidence = self.confid_net(pooled)
+        # Concatena todas as camadas intermediárias na dimensão das features
+        # Shape resultante: (Batch, 512+512+256) = (Batch, 1280)
+        concat_features = torch.cat(all_features, dim=1)
         
-        return confidence, pooled
+        # Passa pela camada de projeção
+        projected_embedding = self.projection(concat_features)
+        
+        # Calcula confiança
+        confidence = self.confid_net(projected_embedding)
+        
+        # Retorna confiança e a última feature (para logs/compatibilidade se necessário)
+        return confidence, all_features[-1]
 
     def training_step(self, batch, batch_idx):
-        x, doy, mask, y = batch["x"], batch["doy"], batch["mask"], batch["y"].squeeze()
+        x, y = batch["x"], batch["y"].squeeze()
 
-        pred_conf, pooled = self.forward(x, doy, mask)
+        pred_conf, pooled = self.forward(x, None, None)
         
         with torch.no_grad():
             self.classifier_layer.eval()
@@ -354,9 +369,9 @@ class Phase2_ConfidNet(pl.LightningModule):
         self.log("p2_lr", lr, prog_bar=True, on_epoch=True, sync_dist=True)
 
     def validation_step(self, batch, batch_idx):
-        x, doy, mask, y = batch["x"], batch["doy"], batch["mask"], batch["y"].squeeze()
+        x, y = batch["x"], batch["y"].squeeze()
         
-        pred_conf, pooled = self.forward(x, doy, mask)
+        pred_conf, pooled = self.forward(x, None, None)
         
         with torch.no_grad():
             logits = self.classifier_layer(pooled)
@@ -430,9 +445,6 @@ model_phase1 = Phase1_Classifier(
     train_dataset=train_dataset
 )
 
-# Carregar pesos pré-treinados do SITS-BERT se houver
-# model_phase1.backbone.load_state_dict(torch.load("siam_texas_new_bert.pth"))
-
 mlflow_logger = MLFlowLogger(experiment_name=f"siam-{DATASET}", tags=TAGS, run_name=RUN_NAME)
 
 checkpoint_cb_p1 = ModelCheckpoint(monitor="p1_val_loss", filename="best_classifier", mode="min")
@@ -474,8 +486,6 @@ best_model_p2 = Phase2_ConfidNet.load_from_checkpoint(
     checkpoint_cb_p2.best_model_path, 
     pretrained_model=best_model_p1
 )
-
-
 
 
 def print_pretty_confusion_matrix(y_true, y_pred, class_names=None):
@@ -542,9 +552,9 @@ def predict_and_save_predictions(model, dataloader, dataset, device="cuda"):
                 if isinstance(v, torch.Tensor):
                     batch[k] = v.to(device)
 
-            x, doy, mask = batch["x"], batch["doy"], batch["mask"]
+            x = batch["x"]
             
-            confidence, pooled = model(x, doy, mask)
+            confidence, pooled = model(x, None, None)
 
             logits = model.classifier_layer(pooled)
 

@@ -346,6 +346,43 @@ class ToPytorchTensor:
 
         return sample
 
+class ReduceToMonthlyMeans:
+    def __call__(self, sample):
+        x, doy = sample["x"], sample["doy"]
+        num_features = x.shape[1]
+
+        valid_mask = doy > 0
+        x_valid = x[valid_mask]
+        doy_valid = doy[valid_mask]
+
+        monthly_means = np.zeros((12, num_features), dtype=x.dtype)
+        present_mask = np.zeros(12, dtype=bool)
+
+        if len(doy_valid) > 0:
+            month_ends = [31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 366]
+            months = np.digitize(doy_valid, month_ends, right=True)
+
+            for m in range(12):
+                mask = months == m
+                if np.any(mask):
+                    monthly_means[m, :] = np.mean(x_valid[mask], axis=0)
+                    present_mask[m] = True
+        
+        
+        out = np.zeros((num_features, 12), dtype=x.dtype)
+        
+        if not np.any(present_mask):
+            return out
+
+        valid_indices = np.where(present_mask)[0]
+        all_indices = np.arange(12)               
+
+        
+        for f in range(num_features):
+            y_valid = monthly_means[valid_indices, f]
+            out[f, :] = np.interp(all_indices, valid_indices, y_valid)
+        
+        return {"x":out.T, "y":sample["y"]}
 
 class Pipeline:
     def __init__(self, transforms):
