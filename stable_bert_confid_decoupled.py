@@ -436,11 +436,14 @@ model_phase1 = Phase1_Classifier(
 mlflow_logger = MLFlowLogger(experiment_name=f"siam-{DATASET}", tags=TAGS, run_name=RUN_NAME)
 
 checkpoint_cb_p1 = ModelCheckpoint(monitor="p1_val_loss", filename="best_classifier", mode="min")
+
+devicestats_monitor = DeviceStatsMonitor(cpu_stats=True)
+
 trainer_p1 = pl.Trainer(
     max_epochs=MAX_EPOCHS_P1, 
     accelerator="gpu",
     precision="bf16-mixed",
-    callbacks=[checkpoint_cb_p1],
+    callbacks=[checkpoint_cb_p1, devicestats_monitor],
     logger=mlflow_logger,
     log_every_n_steps=5
 )
@@ -478,7 +481,7 @@ best_model_p2 = Phase2_ConfidNet.load_from_checkpoint(
 
 
 
-def print_pretty_confusion_matrix(y_true, y_pred, class_names=None):
+def string_confusion_matrix(y_true, y_pred, class_names=None) -> str:
     if class_names is None:
         class_names = sorted(list(set(y_true) | set(y_pred)))
 
@@ -518,7 +521,7 @@ def print_pretty_confusion_matrix(y_true, y_pred, class_names=None):
         row_str += "  ".join(cells)
         output.append(row_str)
 
-    print("\n".join(output))
+    return ("\n".join(output))
 
 
 print("\n--- Validating Phase 2 Best Model ---")
@@ -528,6 +531,8 @@ print("\n--- Loading Best Phase 2 Model for Inference ---")
 best_model_p2.eval()
 
 def predict_and_save_predictions(model, dataloader, dataset, device="cuda"):
+    display_string = ""
+    
     model.eval()
     model.to(device)
 
@@ -575,7 +580,9 @@ def predict_and_save_predictions(model, dataloader, dataset, device="cuda"):
     mlflow_logger.experiment.log_metric(mlflow_logger.run_id, "test_f1_macro", f1_macro)
     mlflow_logger.experiment.log_metric(mlflow_logger.run_id, "test_f1_micro", f1_micro)
 
-    def compute_failure_metrics(y_true_correct, y_confidence, prefix):
+    def compute_failure_metrics(y_true_correct, y_confidence, prefix) -> str:
+        display_string = ""
+        
         y_true_error = (~y_true_correct).astype(int)
         y_true_success = y_true_correct.astype(int)
         
@@ -593,33 +600,35 @@ def predict_and_save_predictions(model, dataloader, dataset, device="cuda"):
         idx = np.argmax(tpr >= 0.95)
         fpr_at_95_tpr = fpr[idx] if idx < len(fpr) else fpr[-1]
 
-        print(f"\n--- Failure Prediction Metrics ({prefix}) ---")
-        print(f"AUC: {auroc:.4f}")
-        print(f"AUPR-Error: {aupr_error:.4f}")
-        print(f"AUPR-Success: {aupr_success:.4f}")
-        print(f"FPR-95%-TPR: {fpr_at_95_tpr:.4f}")
+        display_string += f"\n--- Failure Prediction Metrics ({prefix}) ---\n"
+        display_string += f"AUC: {auroc:.4f}\n"
+        display_string += f"AUPR-Error: {aupr_error:.4f}\n"
+        display_string += f"AUPR-Success: {aupr_success:.4f}\n"
+        display_string += f"FPR-95%-TPR: {fpr_at_95_tpr:.4f}\n"
 
         mlflow_logger.experiment.log_metric(mlflow_logger.run_id, f"{prefix}_AUC", auroc)
         mlflow_logger.experiment.log_metric(mlflow_logger.run_id, f"{prefix}_AUPR_Error", aupr_error)
         mlflow_logger.experiment.log_metric(mlflow_logger.run_id, f"{prefix}_AUPR_Success", aupr_success)
         mlflow_logger.experiment.log_metric(mlflow_logger.run_id, f"{prefix}_FPR_95_TPR", fpr_at_95_tpr)
 
+        return display_string
+
     is_correct = (y_true_int == y_pred_int)
 
-    compute_failure_metrics(is_correct, y_conf, prefix="conf")
+    display_string += compute_failure_metrics(is_correct, y_conf, prefix="conf")
 
-    compute_failure_metrics(is_correct, y_proba_max, prefix="mcp")
+    display_string += compute_failure_metrics(is_correct, y_proba_max, prefix="mcp")
 
-    print("\n--- Classification Report ---")
-    print(classification_report(y_true_names, y_pred_names))
+    display_string += "\n--- Classification Report ---\n"
+    display_string += classification_report(y_true_names, y_pred_names) + "\n"
 
     if hasattr(dataset, "gdf"):
-        print("Merging predictions with original GeoDataFrame...")
+        display_string += "Merging predictions with original GeoDataFrame...\n"
         final_gdf = dataset.gdf.copy()
         
         if len(final_gdf) != len(y_pred_names):
-            print(f"WARNING: Dataset length ({len(final_gdf)}) differs from predictions ({len(y_pred_names)}).")
-            print("Falling back to saving only predictions DataFrame.")
+            display_string += f"WARNING: Dataset length ({len(final_gdf)}) differs from predictions ({len(y_pred_names)}).\n"
+            display_string += "Falling back to saving only predictions DataFrame.\n"
             final_df = pd.DataFrame({
                 "y_true": y_true_names,
                 "y_pred": y_pred_names,
@@ -637,7 +646,7 @@ def predict_and_save_predictions(model, dataloader, dataset, device="cuda"):
             filename = "predictions_geo.parquet"
             
     else:
-        print("Dataset does not have 'gdf' attribute. Saving simple predictions DataFrame.")
+        display_string += "Dataset does not have 'gdf' attribute. Saving simple predictions DataFrame.\n"
         final_df = pd.DataFrame({
             "y_true": y_true_names,
             "y_pred": y_pred_names,
@@ -646,6 +655,8 @@ def predict_and_save_predictions(model, dataloader, dataset, device="cuda"):
         })
         filename = "predictions.parquet"
 
+    print(display_string)
+    
     with tempfile.TemporaryDirectory() as tmpdir:
         file_path = os.path.join(tmpdir, filename)
         final_df.to_parquet(file_path)
