@@ -1,0 +1,7 @@
+- Fazer análise dos dados do XSLX (colheita em 23)
+  - TODO: cobrar Ian dos novos pontos
+- Retreinar tirando anomalias do GMM
+- Fazer train/val/test split sobre um grid
+  - Testar possivelmente o grid militar
+- Gerar chips de convolução no Landsat a partir do centroide do talhão (11x11, todos os anos) para todos os talhões
+- Pensar numa forma melhor. Forma do Ian: aplicar uma convolução 2D sobre os chips (11x11) para cada banda, depois flatten para Transformer
