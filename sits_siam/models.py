@@ -140,9 +140,9 @@ class SITSBert(nn.Module):
         self.reconstruction_layer = nn.Linear(hidden, num_features)
         self.classifier = nn.Linear(hidden, num_classes)
         self.example_input_array = (
-            torch.randn(1, max_len, num_features),  # x: (Batch, Time, Feats)
-            torch.randint(0, 366, (1, max_len)),  # doy: (Batch, Time)
-            torch.zeros(1, max_len).bool(),  # mask: (Batch, Time)
+            torch.randn(1, 120, num_features),  # x: (Batch, Time, Feats)
+            torch.randint(0, 366, (1, 120)),  # doy: (Batch, Time)
+            torch.zeros(1, 120).bool(),  # mask: (Batch, Time)
         )
 
         self._init_weights()
@@ -150,12 +150,11 @@ class SITSBert(nn.Module):
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                # Inicializa pesos de camadas lineares
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
+
             elif isinstance(m, nn.LayerNorm):
-                # Inicializa normalização
                 nn.init.constant_(m.bias, 0)
                 nn.init.constant_(m.weight, 1.0)
 
@@ -175,9 +174,60 @@ class SITSBert(nn.Module):
         return pooled, logits, reconstructed
 
 
+class SITS_MLP_Backbone(nn.Module):
+    def __init__(
+        self,
+        input_channels,
+        num_classes,
+        time_steps=12,
+        hidden_dim=256,
+        dropout_rate=0.3,
+    ):
+        super().__init__()
+
+        input_dim = input_channels * time_steps
+
+        self.flatten = nn.Flatten()
+
+        self.layer1 = nn.Sequential(
+            nn.Linear(input_dim, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+        )
+
+        self.layer2 = nn.Sequential(
+            nn.Linear(512, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+        )
+
+        self.layer3 = nn.Sequential(
+            nn.Linear(512, hidden_dim),
+            nn.ReLU(),
+        )
+
+        self.classifier = nn.Linear(256, num_classes)
+
+    def forward(self, x, doy=None, mask=None):
+        x = self.flatten(x)
+
+        out1 = self.layer1(x)
+        out2 = self.layer2(out1)
+        last_emb = self.layer3(out2)
+
+        logits = self.classifier(last_emb)
+
+        # all_embs = torch.cat([out1, out2, last_emb], dim=1)
+
+        return logits, last_emb, last_emb
+
+
 if __name__ == "__main__":
-    model = SITSBertPlusPlus(num_classes=10)
-    pooled, logits, recon = model(*model.example_input_array)
+    model = SITSBert(num_classes=10)
+    logits, pooled, reconstructed, all_embs = model(*model.example_input_array)
     print("Pooled shape:", pooled.shape)
     print("Logits shape:", logits.shape)
-    print("Reconstruction shape:", recon.shape)
+    print("Reconstruction shape:", reconstructed.shape)
+    print("All embeddings shape:", all_embs.shape)

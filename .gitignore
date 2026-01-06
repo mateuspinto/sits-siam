@@ -13,3 +13,5 @@ mlruns
 *.csv
 *.pth
 *.joblib
+
+aria2.*

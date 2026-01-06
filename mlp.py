@@ -1,3 +1,4 @@
+import copy
 import math
 
 import geopandas as gpd
@@ -32,14 +33,15 @@ from sits_siam.auxiliar import (
     predict_and_save_predictions,
     setup_seed,
     run_gemos,
+    run_gemos_2,
 )
 from sits_siam.utils import AgriGEELiteDataset, SitsFinetuneDatasetFromNpz
+from sits_siam.models import SITS_MLP_Backbone
 
 DATASET = "brazil"
 TRAIN_SIZE = 70
 BATCH_SIZE = 2 * 512
-MAX_EPOCHS_P1 = 100
-MAX_EPOCHS_P2 = 100
+MAX_EPOCHS = 100
 NUM_WARMUP_EPOCHS = 10
 BASE_LR = 1e-4
 PRETRAIN_PATH = ""
@@ -47,8 +49,7 @@ PRETRAIN_PATH = ""
 TAGS = {
     "dataset": DATASET,
     "batch_size": BATCH_SIZE,
-    "max_epochs_p1": MAX_EPOCHS_P1,
-    "max_epochs_p2": MAX_EPOCHS_P2,
+    "max_epochs_p1": MAX_EPOCHS,
     "pretrain_path": PRETRAIN_PATH,
     "num_warmup_epochs": NUM_WARMUP_EPOCHS,
     "base_lr": BASE_LR,
@@ -139,61 +140,6 @@ test_dataset = AgriGEELiteDataset(
 )
 
 
-class SITS_MLP_Backbone(nn.Module):
-    def __init__(
-        self,
-        input_channels,
-        num_classes,
-        time_steps=12,
-        hidden_dim=256,
-        dropout_rate=0.3,
-    ):
-        super().__init__()
-
-        input_dim = input_channels * time_steps
-
-        self.flatten = nn.Flatten()
-
-        # Bloco 1
-        self.layer1 = nn.Sequential(
-            nn.Linear(input_dim, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-        )
-
-        # Bloco 2
-        self.layer2 = nn.Sequential(
-            nn.Linear(512, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-        )
-
-        # Bloco 3 (Saída de Features Latentes)
-        self.layer3 = nn.Sequential(
-            nn.Linear(512, hidden_dim),  # hidden_dim costuma ser 256
-            nn.ReLU(),
-        )
-
-        self.pool = nn.Identity()
-        self.classifier = nn.Linear(256, num_classes)
-
-    def forward(self, x, doy=None, mask=None):
-        # x: (Batch, Channels, 12) -> Flatten -> (Batch, Channels*12)
-        x = self.flatten(x)
-
-        out1 = self.layer1(x)  # (Batch, 512)
-        out2 = self.layer2(out1)  # (Batch, 512)
-        out3 = self.layer3(out2)  # (Batch, 256)
-
-        pooled = self.pool(out3)  # (Batch, 256)
-        logits = self.classifier(pooled)  # (Batch, num_classes)
-
-        # Retorna lista com todas as saídas intermediárias
-        return [out1, out2, out3], pooled, logits
-
-
 class Phase1_Classifier(pl.LightningModule):
     def __init__(
         self,
@@ -210,7 +156,7 @@ class Phase1_Classifier(pl.LightningModule):
             input_channels=10, num_classes=num_classes, time_steps=12, hidden_dim=256
         )
 
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
         self.train_acc = MulticlassAccuracy(num_classes=num_classes, average="micro")
         self.val_acc = MulticlassAccuracy(num_classes=num_classes, average="micro")
 
@@ -221,13 +167,13 @@ class Phase1_Classifier(pl.LightningModule):
         self.base_lr = base_lr
 
     def forward(self, x, doy, mask):
-        _, pooled, logits = self.backbone(x, None, None)
+        logits, last_emb, all_embs = self.backbone(x, None, None)
 
-        return logits, pooled
+        return logits, last_emb, all_embs
 
     def training_step(self, batch, batch_idx):
         x, y = batch["x"], batch["y"].squeeze()
-        logits, _ = self.forward(x, None, None)
+        logits, _, _ = self.forward(x, None, None)
 
         loss = self.criterion(logits, y)
         self.log("p1_train_loss", loss, prog_bar=True)
@@ -240,7 +186,7 @@ class Phase1_Classifier(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, y = batch["x"], batch["y"].squeeze()
-        logits, _ = self.forward(x, None, None)
+        logits, _, _ = self.forward(x, None, None)
 
         loss = self.criterion(logits, y)
         self.log("p1_val_loss", loss, prog_bar=True, sync_dist=True)
@@ -288,27 +234,18 @@ class Phase2_ConfidNet(pl.LightningModule):
         batch_size,
         num_warmup_epochs,
         base_lr,
-        projection_hidden_size=256,
-        embedding_size=128,
-        dropout=0.3,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["pretrained_model"])
         self.backbone = pretrained_model.backbone
 
-        # Congelar Backbone e Classificador
         self.backbone.eval()
         for param in self.backbone.parameters():
             param.requires_grad = False
 
-        # --- CÁLCULO DO TAMANHO DA CONCATENAÇÃO ---
-        # Layer 1 (512) + Layer 2 (512) + Layer 3 (256) = 1280
-        concat_size = 512 + 512 + 256
-
-        # --- REDE DE CONFIANÇA (ConfidNet) ---
-        # Entrada direta da concatenação (1280) sem projeção
+        # Usando apenas a saída final (hidden_dim=256)
         self.confid_net = nn.Sequential(
-            nn.Linear(concat_size, 400),
+            nn.Linear(256, 400),
             nn.ReLU(),
             nn.Linear(400, 400),
             nn.ReLU(),
@@ -329,33 +266,26 @@ class Phase2_ConfidNet(pl.LightningModule):
 
     def forward(self, x, doy, mask):
         with torch.no_grad():
-            # Obtém lista [out1 (512), out2 (512), out3 (256)]
-            all_features, _, _ = self.backbone(x, doy, mask)
+            logits, last_emb, all_embs = self.backbone(x, doy, mask)
 
-        # Concatena todas as camadas intermediárias na dimensão das features
-        # Shape resultante: (Batch, 512+512+256) = (Batch, 1280)
-        concat_features = torch.cat(all_features, dim=1)
+        confidence = self.confid_net(last_emb)
 
-        # Passa direto para a ConfidNet (sem projeção)
-        confidence = self.confid_net(concat_features)
-
-        # Retorna confiança e a última feature (para logs/compatibilidade se necessário)
-        return confidence, all_features[-1]
+        return confidence, logits, last_emb, all_embs
 
     def training_step(self, batch, batch_idx):
         x, y = batch["x"], batch["y"].squeeze()
 
-        pred_conf, pooled = self.forward(x, None, None)
+        confidence, logits, last_emb, _ = self.forward(x, None, None)
 
         with torch.no_grad():
             self.backbone.classifier.eval()
 
-            logits = self.backbone.classifier(pooled.detach())
+            logits = self.backbone.classifier(last_emb.detach())
             probs = F.softmax(logits, dim=1)
 
             tcp_target = probs.gather(1, y.unsqueeze(1)).squeeze()
 
-        loss = self.mse_loss(pred_conf.squeeze(), tcp_target)
+        loss = self.mse_loss(confidence.squeeze(), tcp_target)
 
         self.log("p2_conf_loss", loss, prog_bar=True)
         return loss
@@ -367,19 +297,140 @@ class Phase2_ConfidNet(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         x, y = batch["x"], batch["y"].squeeze()
 
-        pred_conf, pooled = self.forward(x, None, None)
+        confidence, logits, last_emb, _ = self.forward(x, None, None)
 
         with torch.no_grad():
-            logits = self.backbone.classifier(pooled)
+            logits = self.backbone.classifier(last_emb)
             probs = F.softmax(logits, dim=1)
             tcp_target = probs.gather(1, y.unsqueeze(1)).squeeze()
 
-            loss = self.mse_loss(pred_conf.squeeze(), tcp_target)
+            loss = self.mse_loss(confidence.squeeze(), tcp_target)
 
         self.log("p2_val_loss", loss, prog_bar=True, sync_dist=True)
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.base_lr)
+        steps_per_epoch = math.ceil(self.train_dataset_size / self.batch_size)
+        total_steps = steps_per_epoch * self.max_epochs
+        num_warmup_steps = steps_per_epoch * self.num_warmup_epochs
+        warmup_steps = num_warmup_steps
+
+        def lr_lambda(current_step):
+            if current_step < warmup_steps:
+                warmup_factor = 1.0 / 1000
+                alpha = float(current_step) / float(max(1, warmup_steps))
+                return warmup_factor * (1 - alpha) + alpha * 1.0
+
+            else:
+                decay_steps = total_steps - warmup_steps
+                step_in_decay = current_step - warmup_steps
+
+                progress = float(step_in_decay) / float(max(1, decay_steps))
+                progress = min(1.0, progress)
+
+                return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+        scheduler = LambdaLR(optimizer, lr_lambda)
+
+        return [optimizer], [
+            {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1,
+            }
+        ]
+
+
+class Phase3_ConfidNetFinetuning(pl.LightningModule):
+    def __init__(
+        self,
+        pretrained_confidnet: Phase2_ConfidNet,
+        train_dataset_size,
+        max_epochs,
+        batch_size,
+        num_warmup_epochs,
+        base_lr,
+    ):
+        super().__init__()
+        self.save_hyperparameters(ignore=["pretrained_confidnet"])
+
+        self.backbone_frozen = copy.deepcopy(pretrained_confidnet.backbone)
+        self.backbone_frozen.eval()
+        for param in self.backbone_frozen.parameters():
+            param.requires_grad = False
+
+        self.backbone = copy.deepcopy(pretrained_confidnet.backbone)
+
+        for module in self.backbone.modules():
+            if isinstance(module, nn.Dropout):
+                module.p = 0.0
+
+        self.confid_net = pretrained_confidnet.confid_net
+
+        for param in self.backbone.parameters():
+            param.requires_grad = True
+        for param in self.confid_net.parameters():
+            param.requires_grad = True
+
+        self.backbone.train()
+        self.confid_net.train()
+
+        self.mse_loss = nn.MSELoss()
+        self.train_dataset_size = train_dataset_size
+        self.batch_size = batch_size
+        self.max_epochs = max_epochs
+        self.num_warmup_epochs = num_warmup_epochs
+        self.base_lr = base_lr
+
+    def forward(self, x, doy, mask):
+        _, last_emb, _ = self.backbone(x, doy, mask)
+        confidence = self.confid_net(last_emb)
+
+        with torch.no_grad():
+            logits_frozen, last_emb_frozen, all_embs_frozen = self.backbone_frozen(
+                x, doy, mask
+            )
+
+        return confidence, logits_frozen, last_emb_frozen, all_embs_frozen
+
+    def training_step(self, batch, batch_idx):
+        x, y = batch["x"], batch["y"].squeeze()
+
+        confidence, logits_frozen, last_emb_frozen, all_embs_frozen = self.forward(
+            x, None, None
+        )
+
+        logits = self.backbone.classifier(last_emb_frozen)
+        probs = F.softmax(logits, dim=1)
+
+        tcp_target = probs.gather(1, y.unsqueeze(1)).squeeze()
+
+        loss = self.mse_loss(confidence.squeeze(), tcp_target)
+
+        self.log("p3_conf_loss", loss, prog_bar=True)
+        return loss
+
+    def on_train_epoch_end(self):
+        lr = self.trainer.optimizers[0].param_groups[0]["lr"]
+        self.log("p3_lr", lr, prog_bar=True, on_epoch=True, sync_dist=True)
+
+    def validation_step(self, batch, batch_idx):
+        x, y = batch["x"], batch["y"].squeeze()
+
+        confidence, logits_frozen, last_emb_frozen, all_embs_frozen = self.forward(
+            x, None, None
+        )
+
+        logits = self.backbone.classifier(last_emb_frozen)
+        probs = F.softmax(logits, dim=1)
+        tcp_target = probs.gather(1, y.unsqueeze(1)).squeeze()
+
+        loss = self.mse_loss(confidence.squeeze(), tcp_target)
+
+        self.log("p3_val_loss", loss, prog_bar=True, sync_dist=True)
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.base_lr / 10)
         steps_per_epoch = math.ceil(self.train_dataset_size / self.batch_size)
         total_steps = steps_per_epoch * self.max_epochs
         num_warmup_steps = steps_per_epoch * self.num_warmup_epochs
@@ -435,7 +486,7 @@ test_dataloader = torch.utils.data.DataLoader(
 print("--- INICIANDO FASE 1: Classificação ---")
 model_phase1 = Phase1_Classifier(
     num_classes=int(train_dataset.num_classes),
-    max_epochs=MAX_EPOCHS_P1,
+    max_epochs=MAX_EPOCHS,
     batch_size=BATCH_SIZE,
     train_dataset_size=len(train_dataset),
     num_warmup_epochs=NUM_WARMUP_EPOCHS,
@@ -457,7 +508,7 @@ early_stopping_cb_p1 = EarlyStopping(
 devicestats_monitor = DeviceStatsMonitor(cpu_stats=False)
 
 trainer_p1 = pl.Trainer(
-    max_epochs=MAX_EPOCHS_P1,
+    max_epochs=MAX_EPOCHS,
     min_epochs=2 * NUM_WARMUP_EPOCHS,
     accelerator="gpu",
     precision="bf16-mixed",
@@ -473,7 +524,7 @@ print("--- INICIANDO FASE 2: ConfidNet ---")
 
 model_phase2 = Phase2_ConfidNet(
     pretrained_model=best_model_p1,
-    max_epochs=MAX_EPOCHS_P2,
+    max_epochs=MAX_EPOCHS,
     batch_size=BATCH_SIZE,
     train_dataset_size=len(train_dataset),
     num_warmup_epochs=NUM_WARMUP_EPOCHS,
@@ -490,7 +541,7 @@ early_stopping_cb_p2 = EarlyStopping(
 )
 
 trainer_p2 = pl.Trainer(
-    max_epochs=MAX_EPOCHS_P2,
+    max_epochs=MAX_EPOCHS,
     min_epochs=2 * NUM_WARMUP_EPOCHS,
     accelerator="gpu",
     precision="bf16-mixed",
@@ -501,22 +552,84 @@ trainer_p2 = pl.Trainer(
 
 trainer_p2.fit(model_phase2, train_dataloader, val_dataloader)
 
-print("--- Gerando Predições Finais ---")
+print("--- Carregando melhor modelo da Fase 2 ---")
 best_model_p2 = Phase2_ConfidNet.load_from_checkpoint(
     checkpoint_cb_p2.best_model_path, pretrained_model=best_model_p1
 )
 
-print("\n--- Validating Phase 2 Best Model ---")
-trainer_p2.validate(model=best_model_p2, dataloaders=val_dataloader)
+print("\n--- INICIANDO FASE 3: Finetuning ConfidNet Completa ---")
 
-print("\n--- Loading Best Phase 2 Model for Inference ---")
-best_model_p2.eval()
+model_phase3 = Phase3_ConfidNetFinetuning(
+    pretrained_confidnet=best_model_p2,
+    max_epochs=MAX_EPOCHS,
+    batch_size=BATCH_SIZE,
+    train_dataset_size=len(train_dataset),
+    num_warmup_epochs=NUM_WARMUP_EPOCHS,
+    base_lr=BASE_LR,
+)
 
+checkpoint_cb_p3 = ModelCheckpoint(
+    monitor="p3_val_loss", filename="best_confidnet_finetuned", mode="min"
+)
+early_stopping_cb_p3 = EarlyStopping(
+    monitor="p3_val_loss",
+    patience=10,
+    mode="min",
+)
+
+trainer_p3 = pl.Trainer(
+    max_epochs=MAX_EPOCHS,
+    min_epochs=2 * NUM_WARMUP_EPOCHS,
+    accelerator="gpu",
+    precision="bf16-mixed",
+    callbacks=[checkpoint_cb_p3, early_stopping_cb_p3, devicestats_monitor],
+    logger=mlflow_logger,
+    log_every_n_steps=5,
+)
+
+trainer_p3.fit(model_phase3, train_dataloader, val_dataloader)
+
+print("--- Gerando Predições Finais ---")
+best_model_p3 = Phase3_ConfidNetFinetuning.load_from_checkpoint(
+    checkpoint_cb_p3.best_model_path, pretrained_confidnet=best_model_p2
+)
+
+print("\n--- Validating Phase 3 Best Model ---")
+trainer_p3.validate(model=best_model_p3, dataloaders=val_dataloader)
+
+print("\n--- Loading Best Phase 3 Model for Inference ---")
+best_model_p3.eval()
+
+
+train_val_dataset = AgriGEELiteDataset(
+    gdf_train,
+    "/home/m/Downloads/df_sits.parquet",
+    transform=transforms,
+    timestamp_processing="days_after_start",
+)
+
+train_val_dataloader = torch.utils.data.DataLoader(
+    train_val_dataset,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    num_workers=4,
+    pin_memory=True,
+)
 
 train_gdf = predict_and_save_predictions(
-    best_model_p2,
+    best_model_p3,
     train_dataloader,
     train_dataset,
+    mlflow_logger,
+    "train_aug",
+    class_map,
+    to_print=False,
+)
+
+train_val_gdf = predict_and_save_predictions(
+    best_model_p3,
+    train_val_dataloader,
+    train_val_dataset,
     mlflow_logger,
     "train",
     class_map,
@@ -524,7 +637,7 @@ train_gdf = predict_and_save_predictions(
 )
 
 val_gdf = predict_and_save_predictions(
-    best_model_p2,
+    best_model_p3,
     val_dataloader,
     val_dataset,
     mlflow_logger,
@@ -534,7 +647,7 @@ val_gdf = predict_and_save_predictions(
 )
 
 test_gdf = predict_and_save_predictions(
-    best_model_p2,
+    best_model_p3,
     test_dataloader,
     test_dataset,
     mlflow_logger,
@@ -543,4 +656,5 @@ test_gdf = predict_and_save_predictions(
     to_print=True,
 )
 
-run_gemos(train_gdf, val_gdf, test_gdf, mlflow_logger)
+# run_gemos(train_gdf, val_gdf, test_gdf, mlflow_logger)
+run_gemos_2(train_gdf, train_val_gdf, val_gdf, test_gdf, mlflow_logger)
