@@ -346,10 +346,10 @@ def train_rf(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name, n_trials=30)
 
     def objective(trial):
         params = {
-            "n_estimators": trial.suggest_int("n_estimators", 150, 600),
+            "n_estimators": trial.suggest_int("n_estimators", 80, 250),
             "max_depth": trial.suggest_categorical(
                 "max_depth",
-                [None, 10, 15, 20, 30],
+                [None, 5, 10],
             ),
             "min_samples_split": trial.suggest_int("min_samples_split", 2, 10),
             "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 4),
@@ -419,7 +419,7 @@ def train_rf(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name, n_trials=30)
     save_other_model(rf_best, mlflow_logger)
 
 
-train_rf(gdf_train, gdf_train_val, gdf_val, gdf_test, f"RF-{TRAIN_SIZE}", n_trials=20)
+train_rf(gdf_train, gdf_train_val, gdf_val, gdf_test, f"RF-{TRAIN_SIZE}", n_trials=30)
 train_lgbm(gdf_train, gdf_train_val, gdf_val, gdf_test, f"LGBM-{TRAIN_SIZE}")
 train_svc(
     gdf_train,
@@ -427,5 +427,5 @@ train_svc(
     gdf_val,
     gdf_test,
     f"SVM-{TRAIN_SIZE}",
-    n_trials=20,
+    n_trials=30,
 )

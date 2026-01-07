@@ -33,7 +33,7 @@ from sits_siam.auxiliar import (
     predict_and_save_predictions,
     setup_seed,
     run_gemos,
-    run_gemos_2,
+    save_pytorch_model,
 )
 from sits_siam.utils import AgriGEELiteDataset, SitsFinetuneDatasetFromNpz
 from sits_siam.models import SITS_MLP_Backbone
@@ -656,5 +656,5 @@ test_gdf = predict_and_save_predictions(
     to_print=True,
 )
 
-# run_gemos(train_gdf, val_gdf, test_gdf, mlflow_logger)
-run_gemos_2(train_gdf, train_val_gdf, val_gdf, test_gdf, mlflow_logger)
+run_gemos(train_gdf, train_val_gdf, val_gdf, test_gdf, mlflow_logger)
+save_pytorch_model(best_model_p3, mlflow_logger)

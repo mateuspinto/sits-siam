@@ -32,9 +32,10 @@ from sits_siam.auxiliar import (
     beautify_prints,
     predict_and_save_predictions,
     setup_seed,
-    run_gemos_2,
+    run_gemos,
+    save_pytorch_model,
 )
-from sits_siam.models import SITSBert, SITSBertPlusPlus
+from sits_siam.models import SITSBert, SITSBertPlusPlus, SITS_LSTM, SITSConvNext
 from sits_siam.utils import AgriGEELiteDataset, SitsFinetuneDatasetFromNpz
 
 patch_sklearn()
@@ -58,7 +59,7 @@ TAGS = {
     "num_warmup_epochs": NUM_WARMUP_EPOCHS,
     "base_lr": BASE_LR,
 }
-RUN_NAME = f"BERTSCRATCH-{TRAIN_SIZE}"
+RUN_NAME = f"CNN-{TRAIN_SIZE}"
 
 
 transforms = Pipeline(
@@ -157,7 +158,7 @@ class Phase1_Classifier(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        self.backbone = SITSBert(num_classes=num_classes)
+        self.backbone = SITSConvNext(num_classes=num_classes)
         # self.backbone = SITSBertPlusPlus(num_classes=num_classes)
 
         self.criterion = nn.CrossEntropyLoss()
@@ -663,4 +664,5 @@ test_gdf = predict_and_save_predictions(
     to_print=True,
 )
 
-run_gemos_2(train_gdf, train_val_gdf, val_gdf, test_gdf, mlflow_logger)
+run_gemos(train_gdf, train_val_gdf, val_gdf, test_gdf, mlflow_logger)
+save_pytorch_model(best_model_p3, mlflow_logger)

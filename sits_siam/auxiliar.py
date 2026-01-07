@@ -524,6 +524,41 @@ def run_gemos(
         lambda row: "ZUnknow" if row.gmm_gemos_anomaly else row.y_pred, axis=1
     )
 
+    for name, current_gdf in zip(
+        ["train_val", "val", "test"], [train_val_gdf, val_gdf, test_gdf]
+    ):
+        acc = accuracy_score(
+            current_gdf[~current_gdf.gmm_gemos_anomaly].y_true,
+            current_gdf[~current_gdf.gmm_gemos_anomaly].gmm_pred,
+        )
+        f1_weighted = f1_score(
+            current_gdf[~current_gdf.gmm_gemos_anomaly].y_true,
+            current_gdf[~current_gdf.gmm_gemos_anomaly].gmm_pred,
+            average="weighted",
+            zero_division=1,
+        )
+        f1_micro = f1_score(
+            current_gdf[~current_gdf.gmm_gemos_anomaly].y_true,
+            current_gdf[~current_gdf.gmm_gemos_anomaly].gmm_pred,
+            average="micro",
+            zero_division=1,
+        )
+
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_accuracy_wo_anomaly", acc
+        )
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_f1_weighted_wo_anomaly", f1_weighted
+        )
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_f1_micro_wo_anomaly", f1_micro
+        )
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id,
+            f"{name}_anomaly_percentage",
+            current_gdf.gmm_gemos_anomaly.mean(),
+        )
+
     with tempfile.TemporaryDirectory() as tmpdir:
         file_path = os.path.join(tmpdir, "train.parquet")
         train_val_gdf[X_columns] = train_val_gdf[X_columns].astype(np.float16)

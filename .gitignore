@@ -15,3 +15,5 @@ mlruns
 *.joblib
 
 aria2.*
+*.zip
+*.ipynb

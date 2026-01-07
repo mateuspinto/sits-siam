@@ -2,6 +2,7 @@ import math
 
 import torch
 import torch.nn as nn
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 
 class PositionalEncoding(nn.Module):
@@ -224,10 +225,218 @@ class SITS_MLP_Backbone(nn.Module):
         return logits, last_emb, last_emb
 
 
+class SITS_LSTM(nn.Module):
+    def __init__(
+        self,
+        num_classes: int,
+        num_features=10,
+        hidden=256,
+        n_layers=3,
+        dropout=0.1,
+        max_len=366,
+    ):
+        super().__init__()
+
+        self.embed_dim = hidden // 2
+        self.input_proj = nn.Linear(num_features, self.embed_dim)
+
+        self.pos_encoder = PositionalEncoding(self.embed_dim, max_len)
+
+        self.lstm = nn.LSTM(
+            input_size=hidden,
+            hidden_size=hidden // 2,
+            num_layers=n_layers,
+            batch_first=True,
+            bidirectional=True,
+            dropout=dropout if n_layers > 1 else 0,
+        )
+
+        self.layer_norm = nn.LayerNorm(hidden)
+        self.dropout = nn.Dropout(dropout)
+
+        self.classifier = nn.Linear(hidden, num_classes)
+        self.reconstruction_layer = nn.Linear(hidden, num_features)
+
+        self.example_input_array = (
+            torch.randn(1, 120, num_features),
+            torch.randint(0, 366, (1, 120)),
+            torch.zeros(1, 120).bool(),
+        )
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for name, p in self.named_parameters():
+            if "lstm" in name and "weight" in name:
+                nn.init.orthogonal_(p)
+            elif "bias" in name:
+                nn.init.constant_(p, 0)
+            elif isinstance(p, nn.Linear):
+                nn.init.xavier_uniform_(p.weight)
+
+    def forward(self, x, doy, mask):
+        feat_emb = self.input_proj(x)
+        pos_emb = self.pos_encoder(doy)
+
+        embed = torch.cat([feat_emb, pos_emb], dim=-1)
+
+        lengths = (~mask).sum(dim=1).cpu().int()
+        lengths = torch.clamp(lengths, min=1)
+
+        packed_input = pack_padded_sequence(
+            embed, lengths, batch_first=True, enforce_sorted=False
+        )
+
+        packed_output, _ = self.lstm(packed_input)
+
+        lstm_out, _ = pad_packed_sequence(
+            packed_output, batch_first=True, total_length=x.size(1)
+        )
+
+        lstm_out = self.layer_norm(lstm_out)
+        lstm_out = self.dropout(lstm_out)
+
+        reconstructed = self.reconstruction_layer(lstm_out)
+
+        mask_expanded = mask.unsqueeze(-1).expand_as(lstm_out)
+        lstm_out_masked = lstm_out.clone()
+        lstm_out_masked[mask_expanded] = -float("inf")
+
+        pooled, _ = torch.max(lstm_out_masked, dim=1)
+
+        logits = self.classifier(pooled)
+
+        return pooled, logits, reconstructed
+
+
+class LayerNorm2d(nn.Module):
+    def __init__(self, normalized_shape, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(normalized_shape))
+        self.bias = nn.Parameter(torch.zeros(normalized_shape))
+        self.eps = eps
+        self.normalized_shape = (normalized_shape,)
+
+    def forward(self, x):
+        u = x.mean(1, keepdim=True)
+        s = (x - u).pow(2).mean(1, keepdim=True)
+        x = (x - u) / torch.sqrt(s + self.eps)
+        x = self.weight[:, None, None] * x + self.bias[:, None, None]
+        return x
+
+
+class Block(nn.Module):
+    def __init__(self, dim, drop_path=0.0, layer_scale_init_value=1e-6):
+        super().__init__()
+        self.dwconv = nn.Conv2d(
+            dim, dim, kernel_size=(7, 1), padding=(3, 0), groups=dim
+        )
+        self.norm = LayerNorm2d(dim, eps=1e-6)
+        self.pwconv1 = nn.Linear(dim, 4 * dim)
+        self.act = nn.GELU()
+        self.pwconv2 = nn.Linear(4 * dim, dim)
+        self.gamma = (
+            nn.Parameter(layer_scale_init_value * torch.ones((dim)), requires_grad=True)
+            if layer_scale_init_value > 0
+            else None
+        )
+        self.drop_path = nn.Dropout(drop_path) if drop_path > 0.0 else nn.Identity()
+
+    def forward(self, x):
+        input = x
+        x = self.dwconv(x)
+        x = self.norm(x)
+        x = x.permute(0, 2, 3, 1)
+        x = self.pwconv1(x)
+        x = self.act(x)
+        x = self.pwconv2(x)
+        if self.gamma is not None:
+            x = self.gamma * x
+        x = x.permute(0, 3, 1, 2)
+        x = input + self.drop_path(x)
+        return x
+
+
+class SITSConvNext(nn.Module):
+    def __init__(
+        self,
+        num_classes: int,
+        num_features=10,
+        hidden=256,
+        n_layers=3,
+        dropout=0.1,
+        max_len=366,
+    ):
+        super().__init__()
+
+        self.embed_dim = hidden // 2
+        self.input_proj = nn.Linear(num_features, self.embed_dim)
+
+        self.pos_encoder = PositionalEncoding(self.embed_dim, max_len)
+
+        self.stem = nn.Sequential(
+            nn.Conv2d(
+                hidden, hidden, kernel_size=(3, 1), stride=(1, 1), padding=(1, 0)
+            ),
+            LayerNorm2d(hidden, eps=1e-6),
+        )
+
+        dp_rates = [x.item() for x in torch.linspace(0, dropout, n_layers)]
+        self.blocks = nn.Sequential(
+            *[Block(dim=hidden, drop_path=dp_rates[i]) for i in range(n_layers)]
+        )
+
+        self.norm = nn.LayerNorm(hidden, eps=1e-6)
+        self.classifier = nn.Linear(hidden, num_classes)
+        self.reconstruction_layer = nn.Linear(hidden, num_features)
+
+        self.example_input_array = (
+            torch.randn(1, 120, num_features),
+            torch.randint(0, 366, (1, 120)),
+            torch.zeros(1, 120).bool(),
+        )
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, (nn.Conv2d, nn.Linear)):
+                nn.init.trunc_normal_(m.weight, std=0.02)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+    def forward(self, x, doy, mask):
+        feat_emb = self.input_proj(x)
+        pos_emb = self.pos_encoder(doy)
+
+        x_emb = torch.cat([feat_emb, pos_emb], dim=-1)
+
+        mask_expanded = mask.unsqueeze(-1).expand_as(x_emb)
+        x_emb[mask_expanded] = 0.0
+
+        x_2d = x_emb.permute(0, 2, 1).unsqueeze(-1)
+
+        x_2d = self.stem(x_2d)
+        x_2d = self.blocks(x_2d)
+
+        x_out = x_2d.squeeze(-1).permute(0, 2, 1)
+        x_out = self.norm(x_out)
+
+        reconstructed = self.reconstruction_layer(x_out)
+
+        mask_expanded_pool = mask.unsqueeze(-1).expand_as(x_out)
+        x_pool = x_out.clone()
+        x_pool[mask_expanded_pool] = -float("inf")
+        pooled, _ = torch.max(x_pool, dim=1)
+
+        logits = self.classifier(pooled)
+
+        return pooled, logits, reconstructed
+
+
 if __name__ == "__main__":
-    model = SITSBert(num_classes=10)
-    logits, pooled, reconstructed, all_embs = model(*model.example_input_array)
+    model = SITS_LSTM(num_classes=10)
+    pooled, logits, reconstructed = model(*model.example_input_array)
     print("Pooled shape:", pooled.shape)
     print("Logits shape:", logits.shape)
     print("Reconstruction shape:", reconstructed.shape)
-    print("All embeddings shape:", all_embs.shape)

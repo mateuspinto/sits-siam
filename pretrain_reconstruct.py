@@ -21,7 +21,7 @@ from sits_siam.augment import (
     ToPytorchTensor,
 )
 from sits_siam.auxiliar import KNNCallback, beautify_prints, setup_seed
-from sits_siam.models import SITSBert
+from sits_siam.models import SITSBert, SITS_LSTM
 from sits_siam.utils import SitsFinetuneDatasetFromNpz
 
 patch_sklearn()
@@ -100,7 +100,8 @@ class TransformerClassifier(pl.LightningModule):
         base_lr: float,
     ):
         super(TransformerClassifier, self).__init__()
-        self.backbone = SITSBert(num_classes=1)
+        # self.backbone = SITSBert(num_classes=1)
+        self.backbone = SITS_LSTM(num_classes=1)
         self.criterion = nn.MSELoss(reduction="none")
 
         self.max_epochs = max_epochs
@@ -236,8 +237,8 @@ trainer = pl.Trainer(
     accelerator="gpu",
     precision="bf16-mixed",
     logger=mlflow_logger,
-    gradient_clip_val=5.0,
-    gradient_clip_algorithm="norm",
+    # gradient_clip_val=5.0,
+    # gradient_clip_algorithm="norm",
 )
 model = TransformerClassifier(
     max_epochs=MAX_EPOCHS,
