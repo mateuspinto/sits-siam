@@ -474,7 +474,7 @@ def run_gemos(
                 )
             else:
                 best_gmm = GaussianMixture(
-                    n_components=3, random_state=42, init_params="k-means++"
+                    n_components=1, random_state=42, init_params="k-means++"
                 )
             best_gmm.fit(X_train)
 

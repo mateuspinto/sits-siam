@@ -79,6 +79,18 @@ TAGS = {
 EXPERIMENT_NAME = f"{DATASET}-finetuning"
 RUN_NAME_SUFFIX = f"{TRAIN_PERCENT}"
 
+if check_if_already_ran(
+    EXPERIMENT_NAME,
+    f"RF-{RUN_NAME_SUFFIX}",
+) and check_if_already_ran(
+    EXPERIMENT_NAME,
+    f"LGBM-{RUN_NAME_SUFFIX}",
+) and check_if_already_ran(
+    EXPERIMENT_NAME,
+    f"SVM-{RUN_NAME_SUFFIX}",
+):
+    print("All models already ran. Exiting.")
+    exit(0)
 
 transforms = Pipeline(
     [
@@ -103,7 +115,7 @@ aug_transforms = Pipeline(
 )
 
 if DATASET == "brazil":
-    gdf = gpd.read_parquet("/home/m/Downloads/gdf.parquet")
+    gdf = gpd.read_parquet("data/agl/gdf.parquet")
 
     class_map = (
         gdf[["crop_class", "crop_number"]]
@@ -138,28 +150,28 @@ if DATASET == "brazil":
 
     train_dataset = AgriGEELiteDataset(
         gdf_train,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=aug_transforms,
         timestamp_processing="days_after_start",
     )
 
     train_val_dataset = AgriGEELiteDataset(
         gdf_train_val,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=transforms,
         timestamp_processing="days_after_start",
     )
 
     val_dataset = AgriGEELiteDataset(
         gdf_val,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=transforms,
         timestamp_processing="days_after_start",
     )
 
     test_dataset = AgriGEELiteDataset(
         gdf_test,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=transforms,
         timestamp_processing="days_after_start",
     )
@@ -177,19 +189,19 @@ elif DATASET in {"texas", "california"}:
         raise ValueError(f"TRAIN_PERCENT {TRAIN_PERCENT} not supported for {DATASET}")
 
     train_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_{split_string}/train.npz",
+        f"data/{DATASET}_{split_string}/train.npz",
         transform=aug_transforms,
     )
     train_val_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_{split_string}/train.npz",
+        f"data/{DATASET}_{split_string}/train.npz",
         transform=transforms,
     )
     val_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_{split_string}/val.npz",
+        f"data/{DATASET}_{split_string}/val.npz",
         transform=transforms,
     )
     test_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_{split_string}/test.npz",
+        f"data/{DATASET}_{split_string}/test.npz",
         transform=transforms,
     )
 

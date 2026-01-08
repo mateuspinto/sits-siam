@@ -37,7 +37,6 @@ from sits_siam.auxiliar import (
     run_gemos,
     save_pytorch_model,
     split_with_percent_and_class_coverage,
-    check_if_already_ran,
 )
 from sits_siam.models import (
     SITSBert,  # BERT
@@ -89,7 +88,10 @@ GPU_ID = _parsed_args.gpu
 DATASET = _parsed_args.dataset
 MODEL_NAME = _parsed_args.model_name
 BATCH_SIZE = 2 * 512
-MAX_EPOCHS = 200
+
+MAX_EPOCHS=100
+if TRAIN_PERCENT<=1:
+    MAX_EPOCHS = 200
 NUM_WARMUP_EPOCHS = 10
 BASE_LR = 1e-4
 PRETRAIN_PATH = ""
@@ -106,11 +108,7 @@ TAGS = {
     "pretrain": _parsed_args.pretrain,
 }
 RUN_NAME = f"{MODEL_NAME}-{TRAIN_PERCENT}"
-EXPERIMENT_NAME = f"{DATASET}-finetuning"
 
-if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
-    print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
-    exit(0)
 
 transforms = Pipeline(
     [
@@ -137,7 +135,7 @@ aug_transforms = Pipeline(
 )
 
 if DATASET == "brazil":
-    gdf = gpd.read_parquet("/home/m/Downloads/gdf.parquet")
+    gdf = gpd.read_parquet("data/agl/gdf.parquet")
 
     class_map = (
         gdf[["crop_class", "crop_number"]]
@@ -166,21 +164,21 @@ if DATASET == "brazil":
 
     train_dataset = AgriGEELiteDataset(
         gdf_train,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=aug_transforms,
         timestamp_processing="days_after_start",
     )
 
     val_dataset = AgriGEELiteDataset(
         gdf_val,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=transforms,
         timestamp_processing="days_after_start",
     )
 
     test_dataset = AgriGEELiteDataset(
         gdf_test,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=transforms,
         timestamp_processing="days_after_start",
     )
@@ -198,15 +196,15 @@ elif DATASET in {"texas", "california"}:
         raise ValueError(f"TRAIN_PERCENT {TRAIN_PERCENT} not supported for {DATASET}")
 
     train_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_{split_string}/train.npz",
+        f"data/{DATASET}_{split_string}/train.npz",
         transform=transforms,
     )
     val_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_{split_string}/val.npz",
+        f"data/{DATASET}_{split_string}/val.npz",
         transform=transforms,
     )
     test_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_{split_string}/test.npz",
+        f"data/{DATASET}_{split_string}/test.npz",
         transform=transforms,
     )
 else:
@@ -575,7 +573,7 @@ with torch.device("meta"):
 # model_phase1.backbone.load_state_dict(torch.load("siam_texas_new_bert.pth"))
 
 mlflow_logger = MLFlowLogger(
-    experiment_name=EXPERIMENT_NAME, tags=TAGS, run_name=RUN_NAME
+    experiment_name=f"{DATASET}-finetuning", tags=TAGS, run_name=RUN_NAME
 )
 
 checkpoint_cb_p1 = ModelCheckpoint(
@@ -688,7 +686,7 @@ best_model_p3.eval()
 if DATASET == "brazil":
     train_val_dataset = AgriGEELiteDataset(
         gdf_train,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=transforms,
         timestamp_processing="days_after_start",
     )
@@ -705,7 +703,7 @@ elif DATASET in {"texas", "california"}:
         raise ValueError(f"TRAIN_PERCENT {TRAIN_PERCENT} not supported for {DATASET}")
 
     train_val_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_{split_string}/train.npz",
+        f"data/{DATASET}_{split_string}/train.npz",
         transform=transforms,
     )
 else:
