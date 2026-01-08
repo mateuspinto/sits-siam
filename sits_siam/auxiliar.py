@@ -32,8 +32,15 @@ from sklearn.model_selection import train_test_split
 import optuna
 from imblearn.metrics import specificity_score
 from imblearn.metrics import geometric_mean_score
+import mlflow
+
 
 patch_sklearn()
+
+
+def check_if_already_ran(experiment_name, run_name):
+    runs_df = mlflow.search_runs(experiment_names=[experiment_name])
+    return len(runs_df[runs_df["tags.mlflow.runName"] == run_name]) > 0
 
 
 def log_results_in_mlflow(gdf_train, gdf_train_val, gdf_val, gdf_test, mlflow_logger):

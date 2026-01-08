@@ -37,6 +37,7 @@ from sits_siam.auxiliar import (
     run_gemos,
     save_pytorch_model,
     split_with_percent_and_class_coverage,
+    check_if_already_ran,
 )
 from sits_siam.models import (
     SITSBert,  # BERT
@@ -105,7 +106,11 @@ TAGS = {
     "pretrain": _parsed_args.pretrain,
 }
 RUN_NAME = f"{MODEL_NAME}-{TRAIN_PERCENT}"
+EXPERIMENT_NAME = f"{DATASET}-finetuning"
 
+if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
+    print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
+    exit(0)
 
 transforms = Pipeline(
     [
@@ -570,7 +575,7 @@ with torch.device("meta"):
 # model_phase1.backbone.load_state_dict(torch.load("siam_texas_new_bert.pth"))
 
 mlflow_logger = MLFlowLogger(
-    experiment_name=f"{DATASET}-finetuning", tags=TAGS, run_name=RUN_NAME
+    experiment_name=EXPERIMENT_NAME, tags=TAGS, run_name=RUN_NAME
 )
 
 checkpoint_cb_p1 = ModelCheckpoint(

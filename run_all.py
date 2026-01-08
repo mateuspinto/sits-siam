@@ -1,58 +1,38 @@
-import subprocess
-import sys
+import os
 
+WORK_DIR = "/home/m/git/sits-siam"
 DATASETS = ["brazil", "texas", "california"]
 PERCENTAGES = [70, 10, 1, 0.1]
 
 
 def run_shallow_models():
+    if os.path.exists(WORK_DIR):
+        os.chdir(WORK_DIR)
+
     total = len(DATASETS) * len(PERCENTAGES)
-    current = 0
+    count = 0
 
     for dataset in DATASETS:
         for percentage in PERCENTAGES:
-            current += 1
-            print(f"\n{'=' * 80}")
-            print(
-                f"Running [{current}/{total}]: dataset={dataset}, train_percent={percentage}"
+            count += 1
+            print(f"\n--- [{count}/{total}] Rodando: {dataset} ({percentage}%) ---")
+
+            cmd = (
+                f"python shallows.py "
+                f"--dataset {dataset} "
+                f"--train_percent {percentage} "
+                f"--n_trials 100 "
+                f"--n_jobs 20"
             )
-            print(f"{'=' * 80}\n")
 
-            cmd = [
-                sys.executable,
-                "shallows.py",
-                "--dataset",
-                dataset,
-                "--train_percent",
-                str(percentage),
-                "--n_trials",
-                100,
-                "--n_jobs",
-                20,
-            ]
+            exit_code = os.system(cmd)
 
-            try:
-                subprocess.run(
-                    cmd,
-                    check=True,
-                    cwd="/home/m/git/sits-siam",
-                    capture_output=False,
-                )
-                print(f"\n✓ Completed: dataset={dataset}, train_percent={percentage}")
-            except subprocess.CalledProcessError as e:
+            if exit_code != 0:
                 print(
-                    f"\n✗ Error executing: dataset={dataset}, train_percent={percentage}"
+                    f"❌ Erro ao executar {dataset} com {percentage}% (Código: {exit_code})"
                 )
-                print(f"Error code: {e.returncode}")
-
-                continue
-            except KeyboardInterrupt:
-                print("\n\nInterrupted by user.")
-                sys.exit(1)
-
-    print(f"\n{'=' * 80}")
-    print(f"Process completed! Total executions: {total}")
-    print(f"{'=' * 80}\n")
+            else:
+                print(f"✅ Sucesso: {dataset} {percentage}%")
 
 
 if __name__ == "__main__":

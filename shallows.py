@@ -6,7 +6,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import f1_score, accuracy_score
+from sklearn.metrics import f1_score
 from sklearn.pipeline import Pipeline as SklearnPipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
@@ -32,6 +32,7 @@ from sits_siam.auxiliar import (
     save_other_model,
     split_with_percent_and_class_coverage,
     log_results_in_mlflow,
+    check_if_already_ran,
 )
 from sits_siam.utils import AgriGEELiteDataset, SitsFinetuneDatasetFromNpz
 
@@ -275,6 +276,10 @@ elif DATASET in {"texas", "california"}:
 
 
 def train_lgbm(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name):
+    if check_if_already_ran(EXPERIMENT_NAME, run_name):
+        print(run_name, "already ran in", EXPERIMENT_NAME)
+        return
+
     gdf_train = gdf_train.copy()
     gdf_train_val = gdf_train_val.copy()
     gdf_val = gdf_val.copy()
@@ -332,7 +337,16 @@ def train_lgbm(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name):
 
 
 def train_svc(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name, n_trials=60):
-    sampled_gdf_train = gdf_train.sample(10_000, random_state=42).copy()
+    if check_if_already_ran(EXPERIMENT_NAME, run_name):
+        print(run_name, "already ran in", EXPERIMENT_NAME)
+        return
+
+    if len(gdf_train) > 10_000:
+        sampled_gdf_train = (
+            gdf_train.sample(10_000, random_state=42).reset_index(drop=True).copy()
+        )
+    else:
+        sampled_gdf_train = gdf_train
 
     gdf_train = gdf_train
     gdf_train_val = gdf_train_val
@@ -428,6 +442,10 @@ def train_svc(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name, n_trials=60
 
 
 def train_rf(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name, n_trials=30):
+    if check_if_already_ran(EXPERIMENT_NAME, run_name):
+        print(run_name, "already ran in", EXPERIMENT_NAME)
+        return
+
     X_train = gdf_train[X_COLUMNS].to_numpy().astype(np.float32)
     y_train = gdf_train["crop_class"].values
 
