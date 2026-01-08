@@ -77,8 +77,14 @@ BATCHED_ARGS_PARSER.add_argument(
     choices=["off", "reconstruct"],
     default="off",
 )
+BATCHED_ARGS_PARSER.add_argument(
+    "--gpu",
+    type=int,
+    default=0,
+)
 _parsed_args, _ = BATCHED_ARGS_PARSER.parse_known_args()
 TRAIN_PERCENT = float(_parsed_args.train_percent)
+GPU_ID = _parsed_args.gpu
 DATASET = _parsed_args.dataset
 MODEL_NAME = _parsed_args.model_name
 BATCH_SIZE = 2 * 512
@@ -583,6 +589,7 @@ trainer_p1 = pl.Trainer(
     max_epochs=MAX_EPOCHS,
     min_epochs=2 * NUM_WARMUP_EPOCHS,
     accelerator="gpu",
+    devices=[GPU_ID],
     precision="bf16-mixed",
     callbacks=[checkpoint_cb_p1, early_stopping_cb_p1, devicestats_monitor],
     logger=mlflow_logger,
@@ -616,6 +623,7 @@ trainer_p2 = pl.Trainer(
     max_epochs=MAX_EPOCHS,
     min_epochs=2 * NUM_WARMUP_EPOCHS,
     accelerator="gpu",
+    devices=[GPU_ID],
     precision="bf16-mixed",
     callbacks=[checkpoint_cb_p2, early_stopping_cb_p2],
     logger=mlflow_logger,
@@ -652,6 +660,7 @@ trainer_p3 = pl.Trainer(
     max_epochs=MAX_EPOCHS,
     min_epochs=2 * NUM_WARMUP_EPOCHS,
     accelerator="gpu",
+    devices=[GPU_ID],
     precision="bf16-mixed",
     callbacks=[checkpoint_cb_p3, early_stopping_cb_p3],
     logger=mlflow_logger,
@@ -671,12 +680,31 @@ trainer_p3.validate(model=best_model_p3, dataloaders=val_dataloader)
 print("\n--- Loading Best Phase 3 Model for Inference ---")
 best_model_p3.eval()
 
-train_val_dataset = AgriGEELiteDataset(
-    gdf_train,
-    "/home/m/Downloads/df_sits.parquet",
-    transform=transforms,
-    timestamp_processing="days_after_start",
-)
+if DATASET == "brazil":
+    train_val_dataset = AgriGEELiteDataset(
+        gdf_train,
+        "/home/m/Downloads/df_sits.parquet",
+        transform=transforms,
+        timestamp_processing="days_after_start",
+    )
+elif DATASET in {"texas", "california"}:
+    if TRAIN_PERCENT == 70:
+        split_string = "npz"
+    elif TRAIN_PERCENT == 10:
+        split_string = "10_10_80"
+    elif TRAIN_PERCENT == 1:
+        split_string = "1_1_98"
+    elif TRAIN_PERCENT == 0.1:
+        split_string = "001_001_998"
+    else:
+        raise ValueError(f"TRAIN_PERCENT {TRAIN_PERCENT} not supported for {DATASET}")
+
+    train_val_dataset = SitsFinetuneDatasetFromNpz(
+        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_{split_string}/train.npz",
+        transform=transforms,
+    )
+else:
+    raise ValueError(f"Dataset {DATASET} not recognized.")
 
 train_val_dataloader = torch.utils.data.DataLoader(
     train_val_dataset,
