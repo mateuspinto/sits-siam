@@ -19,6 +19,7 @@ from sklearn.metrics import (
     precision_recall_curve,
     roc_auc_score,
     roc_curve,
+    matthews_corrcoef,
 )
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import KNeighborsClassifier
@@ -29,8 +30,46 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
 import optuna
+from imblearn.metrics import specificity_score
+from imblearn.metrics import geometric_mean_score
 
 patch_sklearn()
+
+
+def log_results_in_mlflow(gdf_train, gdf_train_val, gdf_val, gdf_test, mlflow_logger):
+    for name, gdf in zip(
+        ["train_aug", "train", "val", "test"],
+        [gdf_train, gdf_train_val, gdf_val, gdf_test],
+    ):
+        acc = accuracy_score(gdf["y_true"], gdf["y_pred"])
+        f1_weighted = f1_score(gdf["y_true"], gdf["y_pred"], average="weighted")
+        f1_micro = f1_score(gdf["y_true"], gdf["y_pred"], average="micro")
+        f1_macro = f1_score(gdf["y_true"], gdf["y_pred"], average="macro")
+        gms = geometric_mean_score(gdf["y_true"], gdf["y_pred"], average="macro")
+        spec = specificity_score(gdf["y_true"], gdf["y_pred"], average="macro")
+        matt = matthews_corrcoef(gdf["y_true"], gdf["y_pred"])
+
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_accuracy", acc
+        )
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_f1_weighted", f1_weighted
+        )
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_f1_micro", f1_micro
+        )
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_f1_macro", f1_macro
+        )
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_geometric_mean_score", gms
+        )
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_specificity", spec
+        )
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_matthews_corrcoef", matt
+        )
 
 
 def setup_seed():
@@ -142,6 +181,9 @@ def predict_and_save_predictions(
     acc = accuracy_score(y_true_names, y_pred_names)
     f1_weighted = f1_score(y_true_names, y_pred_names, average="weighted")
     f1_micro = f1_score(y_true_names, y_pred_names, average="micro")
+    gms = geometric_mean_score(y_true_names, y_pred_names, average="macro")
+    spec = specificity_score(y_true_names, y_pred_names, average="macro")
+    matt = matthews_corrcoef(y_true_names, y_pred_names)
 
     mlflow_logger.experiment.log_metric(mlflow_logger.run_id, f"{name}_accuracy", acc)
     mlflow_logger.experiment.log_metric(
@@ -149,6 +191,15 @@ def predict_and_save_predictions(
     )
     mlflow_logger.experiment.log_metric(
         mlflow_logger.run_id, f"{name}_f1_micro", f1_micro
+    )
+    mlflow_logger.experiment.log_metric(
+        mlflow_logger.run_id, f"{name}_geometric_mean_score", gms
+    )
+    mlflow_logger.experiment.log_metric(
+        mlflow_logger.run_id, f"{name}_specificity", spec
+    )
+    mlflow_logger.experiment.log_metric(
+        mlflow_logger.run_id, f"{name}_matthews_corrcoef", matt
     )
 
     def compute_failure_metrics(y_true_correct, y_confidence, prefix) -> str:

@@ -31,6 +31,7 @@ from sits_siam.auxiliar import (
     setup_seed,
     save_other_model,
     split_with_percent_and_class_coverage,
+    log_results_in_mlflow,
 )
 from sits_siam.utils import AgriGEELiteDataset, SitsFinetuneDatasetFromNpz
 
@@ -76,26 +77,6 @@ TAGS = {
 }
 EXPERIMENT_NAME = f"{DATASET}-finetuning"
 RUN_NAME_SUFFIX = f"{TRAIN_PERCENT}"
-
-
-def log_results_in_mlflow(gdf_train, gdf_train_val, gdf_val, gdf_test, mlflow_logger):
-    for name, gdf in zip(
-        ["train_aug", "train", "val", "test"],
-        [gdf_train, gdf_train_val, gdf_val, gdf_test],
-    ):
-        acc = accuracy_score(gdf["y_true"], gdf["y_pred"])
-        f1_weighted = f1_score(gdf["y_true"], gdf["y_pred"], average="weighted")
-        f1_micro = f1_score(gdf["y_true"], gdf["y_pred"], average="micro")
-
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_accuracy", acc
-        )
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_f1_weighted", f1_weighted
-        )
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_f1_micro", f1_micro
-        )
 
 
 transforms = Pipeline(
