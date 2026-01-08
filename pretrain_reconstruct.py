@@ -1,5 +1,9 @@
 import math
+import argparse
 
+import pandas as pd
+import geopandas as gpd
+from sklearn.model_selection import train_test_split
 import lightning.pytorch as pl
 import torch
 import torch.nn as nn
@@ -7,6 +11,7 @@ from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import MLFlowLogger
 from sklearnex import patch_sklearn
 from torch.optim.lr_scheduler import LambdaLR
+from torch.utils.data import WeightedRandomSampler
 
 from sits_siam.augment import (
     AddCorruptedSample,
@@ -19,21 +24,43 @@ from sits_siam.augment import (
     RandomTempShift,
     RandomTempSwapping,
     ToPytorchTensor,
+    RandomChanRemoval,
 )
-from sits_siam.auxiliar import KNNCallback, beautify_prints, setup_seed
-from sits_siam.models import SITSBert, SITS_LSTM
-from sits_siam.utils import SitsFinetuneDatasetFromNpz
+from sits_siam.auxiliar import (
+    KNNCallback,
+    setup_seed,
+    save_pytorch_model,
+    split_with_percent_and_class_coverage,
+)
+from sits_siam.models import (
+    SITSBert,
+    SITS_LSTM,
+    SITSBertPlusPlus,
+    SITSConvNext,
+    SITSMamba,
+)
+from sits_siam.utils import SitsFinetuneDatasetFromNpz, AgriGEELiteDataset
 
 patch_sklearn()
 setup_seed()
-beautify_prints()
+# beautify_prints()
 torch.set_float32_matmul_precision("high")
 
-DATASET = "texas"
+DATASET = "brazil"
 BATCH_SIZE = 2 * 512
 MAX_EPOCHS = 400
 NUM_WARMUP_EPOCHS = 20
 BASE_LR = 1e-4
+
+BATCHED_ARGS_PARSER = argparse.ArgumentParser(add_help=False)
+BATCHED_ARGS_PARSER.add_argument(
+    "--model_name",
+    type=str,
+    choices=["MAMBA", "BERT", "BERTPP", "LSTM", "CNN"],
+    default="MAMBA",
+)
+_parsed_args, _ = BATCHED_ARGS_PARSER.parse_known_args()
+MODEL_NAME = _parsed_args.model_name
 
 TAGS = {
     "dataset": DATASET,
@@ -41,17 +68,20 @@ TAGS = {
     "max_epochs": MAX_EPOCHS,
     "num_warmup_epochs": NUM_WARMUP_EPOCHS,
     "base_lr": BASE_LR,
+    "model_name": MODEL_NAME,
 }
 RUN_NAME = "-".join(str(value) for value in TAGS.values())
+EXPERIMENT_NAME = f"pretrain-{DATASET}"
+RUN_NAME = f"{MODEL_NAME}-reconstruct"
 
-
-aug_transform = Pipeline(
+aug_transforms = Pipeline(
     [
         LimitSequenceLength(127),
         IncreaseSequenceLength(127),
         RandomTempSwapping(max_distance=3),
         RandomTempShift(),
         RandomTempRemoval(),
+        # RandomChanRemoval(0.2),
         AddMissingMask(),
         Normalize(),
         AddCorruptedSample(),
@@ -59,7 +89,7 @@ aug_transform = Pipeline(
     ]
 )
 
-val_transform = Pipeline(
+val_transforms = Pipeline(
     [
         LimitSequenceLength(127),
         IncreaseSequenceLength(127),
@@ -70,24 +100,67 @@ val_transform = Pipeline(
     ]
 )
 
-train_dataset = SitsFinetuneDatasetFromNpz(
-    "/mnt/c/Users/m/Downloads/grsl/california_01_01_998/test.npz",
-    transform=aug_transform,
-)
-val_dataset = SitsFinetuneDatasetFromNpz(
-    "/mnt/c/Users/m/Downloads/grsl/california_01_01_998/val.npz",
-    transform=val_transform,
-)
+if DATASET in {"california", "texas"}:
+    train_dataset = SitsFinetuneDatasetFromNpz(
+        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/test.npz",
+        transform=aug_transforms,
+    )
+    val_dataset = SitsFinetuneDatasetFromNpz(
+        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/val.npz",
+        transform=val_transforms,
+    )
 
+    knn_train_dataset = SitsFinetuneDatasetFromNpz(
+        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/train.npz",
+        transform=val_transforms,
+    )
+    knn_val_dataset = SitsFinetuneDatasetFromNpz(
+        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/val.npz",
+        transform=val_transforms,
+    )
+elif DATASET == "brazil":
+    gdf = gpd.read_parquet("/home/m/Downloads/gdf.parquet")
 
-knn_train_dataset = SitsFinetuneDatasetFromNpz(
-    "/mnt/c/Users/m/Downloads/grsl/california_01_01_998/train.npz",
-    transform=val_transform,
-)
-knn_val_dataset = SitsFinetuneDatasetFromNpz(
-    "/mnt/c/Users/m/Downloads/grsl/california_01_01_998/val.npz",
-    transform=val_transform,
-)
+    class_map = (
+        gdf[["crop_class", "crop_number"]]
+        .drop_duplicates()
+        .set_index("crop_number")["crop_class"]
+        .to_dict()
+    )
+
+    gdf_train, gdf_val, gdf_test = split_with_percent_and_class_coverage(
+        gdf, percent=1, max_attempts=500
+    )
+
+    train_dataset = AgriGEELiteDataset(
+        gdf_test,  # Test set used for training in pretraining
+        "/home/m/Downloads/df_sits.parquet",
+        transform=aug_transforms,
+        timestamp_processing="days_after_start",
+    )
+
+    val_dataset = AgriGEELiteDataset(
+        gdf_val,
+        "/home/m/Downloads/df_sits.parquet",
+        transform=val_transforms,
+        timestamp_processing="days_after_start",
+    )
+
+    knn_train_dataset = AgriGEELiteDataset(
+        gdf_val,
+        "/home/m/Downloads/df_sits.parquet",
+        transform=val_transforms,
+        timestamp_processing="days_after_start",
+    )
+
+    knn_val_dataset = AgriGEELiteDataset(
+        gdf_train,
+        "/home/m/Downloads/df_sits.parquet",
+        transform=val_transforms,
+        timestamp_processing="days_after_start",
+    )
+else:
+    raise ValueError(f"Dataset {DATASET} not recognized.")
 
 
 class TransformerClassifier(pl.LightningModule):
@@ -100,8 +173,14 @@ class TransformerClassifier(pl.LightningModule):
         base_lr: float,
     ):
         super(TransformerClassifier, self).__init__()
-        # self.backbone = SITSBert(num_classes=1)
-        self.backbone = SITS_LSTM(num_classes=1)
+        BACKBONES = {
+            "BERT": SITSBert,
+            "BERTPP": SITSBertPlusPlus,
+            "LSTM": SITS_LSTM,
+            "CNN": SITSConvNext,
+            "MAMBA": SITSMamba,
+        }
+        self.backbone = BACKBONES[MODEL_NAME](num_classes=1)
         self.criterion = nn.MSELoss(reduction="none")
 
         self.max_epochs = max_epochs
@@ -189,8 +268,19 @@ class TransformerClassifier(pl.LightningModule):
         ]
 
 
+sample_weights = train_dataset.get_weights_for_WeightedRandomSampler()
+
+sampler = WeightedRandomSampler(
+    weights=sample_weights, num_samples=len(sample_weights), replacement=True
+)
+
 train_dataloader = torch.utils.data.DataLoader(
-    train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True
+    train_dataset,
+    batch_size=BATCH_SIZE,
+    sampler=sampler,
+    shuffle=False,
+    num_workers=4,
+    pin_memory=True,
 )
 val_dataloader = torch.utils.data.DataLoader(
     val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True
@@ -212,7 +302,7 @@ knn_val_dataloader = torch.utils.data.DataLoader(
 )
 
 
-mlflow_logger = MLFlowLogger(experiment_name="california-pretrain")
+mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, run_name=RUN_NAME)
 
 knn_callback = KNNCallback(
     train_dataloader=knn_train_dataloader,
@@ -222,12 +312,12 @@ knn_callback = KNNCallback(
     k=3,
 )
 checkpoint_callback = ModelCheckpoint(
-    monitor="val_loss", filename="best_model", save_top_k=1, mode="min"
+    monitor="knn_f1_weighted", filename="best_model", save_top_k=1, mode="max"
 )
 early_stopping_callback = EarlyStopping(
-    monitor="val_loss",
-    patience=20,
-    mode="min",
+    monitor="knn_f1_weighted",
+    patience=40,
+    mode="max",
 )
 
 trainer = pl.Trainer(
@@ -237,8 +327,6 @@ trainer = pl.Trainer(
     accelerator="gpu",
     precision="bf16-mixed",
     logger=mlflow_logger,
-    # gradient_clip_val=5.0,
-    # gradient_clip_algorithm="norm",
 )
 model = TransformerClassifier(
     max_epochs=MAX_EPOCHS,
@@ -259,4 +347,4 @@ model = TransformerClassifier.load_from_checkpoint(
     base_lr=BASE_LR,
 )
 
-torch.save(model.backbone.state_dict(), "bert_all_new_bert.pth")
+save_pytorch_model(model.backbone, mlflow_logger)

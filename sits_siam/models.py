@@ -2,6 +2,7 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 
@@ -26,7 +27,7 @@ class SITSBertPlusPlus(nn.Module):
         self,
         num_classes: int,
         num_features=10,
-        hidden=768,
+        hidden=252,
         n_layers=3,
         n_heads=12,
         dropout=0.1,
@@ -242,7 +243,7 @@ class SITS_LSTM(nn.Module):
 
         self.pos_encoder = PositionalEncoding(self.embed_dim, max_len)
 
-        self.lstm = nn.LSTM(
+        self.gru = nn.GRU(
             input_size=hidden,
             hidden_size=hidden // 2,
             num_layers=n_layers,
@@ -267,7 +268,7 @@ class SITS_LSTM(nn.Module):
 
     def _init_weights(self):
         for name, p in self.named_parameters():
-            if "lstm" in name and "weight" in name:
+            if "gru" in name and "weight" in name:
                 nn.init.orthogonal_(p)
             elif "bias" in name:
                 nn.init.constant_(p, 0)
@@ -287,22 +288,22 @@ class SITS_LSTM(nn.Module):
             embed, lengths, batch_first=True, enforce_sorted=False
         )
 
-        packed_output, _ = self.lstm(packed_input)
+        packed_output, _ = self.gru(packed_input)
 
-        lstm_out, _ = pad_packed_sequence(
+        gru_out, _ = pad_packed_sequence(
             packed_output, batch_first=True, total_length=x.size(1)
         )
 
-        lstm_out = self.layer_norm(lstm_out)
-        lstm_out = self.dropout(lstm_out)
+        gru_out = self.layer_norm(gru_out)
+        gru_out = self.dropout(gru_out)
 
-        reconstructed = self.reconstruction_layer(lstm_out)
+        reconstructed = self.reconstruction_layer(gru_out)
 
-        mask_expanded = mask.unsqueeze(-1).expand_as(lstm_out)
-        lstm_out_masked = lstm_out.clone()
-        lstm_out_masked[mask_expanded] = -float("inf")
+        mask_expanded = mask.unsqueeze(-1).expand_as(gru_out)
+        gru_out_masked = gru_out.clone()
+        gru_out_masked[mask_expanded] = -float("inf")
 
-        pooled, _ = torch.max(lstm_out_masked, dim=1)
+        pooled, _ = torch.max(gru_out_masked, dim=1)
 
         logits = self.classifier(pooled)
 
@@ -434,9 +435,131 @@ class SITSConvNext(nn.Module):
         return pooled, logits, reconstructed
 
 
+class MambaBlock(nn.Module):
+    def __init__(self, d_model, d_state=16, d_conv=4, expand=2, dropout=0.0):
+        super().__init__()
+        self.d_inner = int(expand * d_model)
+        self.dt_rank = tuple([self.d_inner // 16]) if (self.d_inner // 16) > 0 else (1,)
+        self.in_proj = nn.Linear(d_model, self.d_inner * 2)
+
+        self.conv1d = nn.Conv1d(
+            in_channels=self.d_inner,
+            out_channels=self.d_inner,
+            bias=True,
+            kernel_size=d_conv,
+            groups=self.d_inner,
+            padding=d_conv - 1,
+        )
+
+        self.x_proj = nn.Linear(self.d_inner, self.dt_rank[0] + d_state * 2, bias=False)
+        self.dt_proj = nn.Linear(self.dt_rank[0], self.d_inner, bias=True)
+
+        A = torch.arange(1, d_state + 1, dtype=torch.float32).repeat(self.d_inner, 1)
+        self.A_log = nn.Parameter(torch.log(A))
+        self.D = nn.Parameter(torch.ones(self.d_inner))
+        self.out_proj = nn.Linear(self.d_inner, d_model)
+        self.dropout = nn.Dropout(dropout)
+        self.act = nn.SiLU()
+
+    def forward(self, x):
+        batch, seq_len, _ = x.shape
+        x_and_res = self.in_proj(x)
+        (x_in, res) = x_and_res.split(self.d_inner, dim=-1)
+
+        x_conv = x_in.permute(0, 2, 1)
+        x_conv = self.conv1d(x_conv)[:, :, :seq_len]
+        x_conv = self.act(x_conv.permute(0, 2, 1))
+
+        x_dbl = self.x_proj(x_conv)
+        (dt, B, C) = torch.split(
+            x_dbl,
+            [
+                self.dt_rank[0],
+                x_dbl.shape[-1] // 2 - self.dt_rank[0] // 2,
+                x_dbl.shape[-1] // 2 - self.dt_rank[0] // 2,
+            ],
+            dim=-1,
+        )
+
+        delta = self.dt_proj(dt)
+        delta = F.softplus(delta)
+
+        y = x_conv * (self.D * delta)
+
+        y = y * self.act(res)
+        out = self.out_proj(y)
+        return self.dropout(out)
+
+
+class SITSMamba(nn.Module):
+    def __init__(
+        self,
+        num_classes: int,
+        num_features=10,
+        hidden=256,
+        n_layers=3,
+        dropout=0.1,
+        max_len=366,
+    ):
+        super().__init__()
+        self.embed_dim = hidden // 2
+        self.input_proj = nn.Linear(num_features, self.embed_dim)
+
+        self.pos_encoder = PositionalEncoding(self.embed_dim, max_len)
+
+        self.layers = nn.ModuleList(
+            [MambaBlock(d_model=hidden, dropout=dropout) for _ in range(n_layers)]
+        )
+
+        self.norm_f = nn.LayerNorm(hidden)
+        self.classifier = nn.Linear(hidden, num_classes)
+        self.reconstruction_layer = nn.Linear(hidden, num_features)
+
+        self.example_input_array = (
+            torch.randn(1, 120, num_features),
+            torch.randint(0, 366, (1, 120)),
+            torch.zeros(1, 120).bool(),
+        )
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Conv1d):
+                nn.init.kaiming_normal_(m.weight)
+
+    def forward(self, x, doy, mask):
+        feat_emb = self.input_proj(x)
+        pos_emb = self.pos_encoder(doy)
+        x_emb = torch.cat([feat_emb, pos_emb], dim=-1)
+
+        for layer in self.layers:
+            x_emb = x_emb + layer(x_emb)
+
+        x_out = self.norm_f(x_emb)
+        reconstructed = self.reconstruction_layer(x_out)
+
+        mask_expanded = mask.unsqueeze(-1).expand_as(x_out)
+        x_pool = x_out.clone()
+        x_pool[mask_expanded] = -float("inf")
+        pooled, _ = torch.max(x_pool, dim=1)
+
+        logits = self.classifier(pooled)
+        return pooled, logits, reconstructed
+
+
 if __name__ == "__main__":
-    model = SITS_LSTM(num_classes=10)
-    pooled, logits, reconstructed = model(*model.example_input_array)
-    print("Pooled shape:", pooled.shape)
-    print("Logits shape:", logits.shape)
-    print("Reconstruction shape:", reconstructed.shape)
+    models = [
+        SITSBertPlusPlus,
+        SITSBert,
+        SITS_LSTM,
+        SITSConvNext,
+        SITSMamba,
+    ]
+    for model in models:
+        model = model(num_classes=1)
+        pooled, logits, reconstructed = model(*model.example_input_array)
+        print("Shape:", pooled.shape, logits.shape, reconstructed.shape)

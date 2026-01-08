@@ -1,7 +1,9 @@
 import copy
 import math
+import argparse
 
 import geopandas as gpd
+import pandas as pd
 import lightning.pytorch as pl
 import torch
 import torch.nn as nn
@@ -34,19 +36,53 @@ from sits_siam.auxiliar import (
     setup_seed,
     run_gemos,
     save_pytorch_model,
+    split_with_percent_and_class_coverage,
 )
-from sits_siam.models import SITSBert, SITSBertPlusPlus, SITS_LSTM, SITSConvNext
+from sits_siam.models import (
+    SITSBert,  # BERT
+    SITSBertPlusPlus,  # BERT++
+    SITS_LSTM,  # LSTM
+    SITSConvNext,  # CNN
+    SITSMamba,  # MAMBA
+)
 from sits_siam.utils import AgriGEELiteDataset, SitsFinetuneDatasetFromNpz
 
 patch_sklearn()
 torch.set_float32_matmul_precision("high")
 setup_seed()
-beautify_prints()
+# beautify_prints()
 
-DATASET = "brazil"
-TRAIN_SIZE = 70
+
+BATCHED_ARGS_PARSER = argparse.ArgumentParser(add_help=False)
+BATCHED_ARGS_PARSER.add_argument(
+    "--train_percent",
+    type=float,
+    default=70.0,
+)
+BATCHED_ARGS_PARSER.add_argument(
+    "--model_name",
+    type=str,
+    choices=["MAMBA", "BERT", "BERTPP", "LSTM", "CNN"],
+    default="MAMBA",
+)
+BATCHED_ARGS_PARSER.add_argument(
+    "--dataset",
+    type=str,
+    choices=["brazil", "california", "texas", "pastis"],
+    default="brazil",
+)
+BATCHED_ARGS_PARSER.add_argument(
+    "--pretrain",
+    type=str,
+    choices=["off", "reconstruct"],
+    default="off",
+)
+_parsed_args, _ = BATCHED_ARGS_PARSER.parse_known_args()
+TRAIN_PERCENT = float(_parsed_args.train_percent)
+DATASET = _parsed_args.dataset
+MODEL_NAME = _parsed_args.model_name
 BATCH_SIZE = 2 * 512
-MAX_EPOCHS = 100
+MAX_EPOCHS = 200
 NUM_WARMUP_EPOCHS = 10
 BASE_LR = 1e-4
 PRETRAIN_PATH = ""
@@ -58,8 +94,11 @@ TAGS = {
     "pretrain_path": PRETRAIN_PATH,
     "num_warmup_epochs": NUM_WARMUP_EPOCHS,
     "base_lr": BASE_LR,
+    "train_percent": TRAIN_PERCENT,
+    "model_name": MODEL_NAME,
+    "pretrain": _parsed_args.pretrain,
 }
-RUN_NAME = f"CNN-{TRAIN_SIZE}"
+RUN_NAME = f"{MODEL_NAME}-{TRAIN_PERCENT}"
 
 
 transforms = Pipeline(
@@ -86,63 +125,81 @@ aug_transforms = Pipeline(
     ]
 )
 
-# train_dataset = SitsFinetuneDatasetFromNpz("data/texas_70_15_15/train.npz", transform=transforms)
-# val_dataset = SitsFinetuneDatasetFromNpz("data/texas_70_15_15/val.npz", transform=transforms)
-# test_dataset = SitsFinetuneDatasetFromNpz("data/texas_70_15_15/test.npz", transform=transforms)
+if DATASET == "brazil":
+    gdf = gpd.read_parquet("/home/m/Downloads/gdf.parquet")
 
+    class_map = (
+        gdf[["crop_class", "crop_number"]]
+        .drop_duplicates()
+        .set_index("crop_number")["crop_class"]
+        .to_dict()
+    )
 
-gdf = gpd.read_parquet("/home/m/Downloads/gdf.parquet")
+    if abs(TRAIN_PERCENT - 70.0) < 1e-9:
+        unique_mun = gdf["CD_MUN"].unique()
 
-class_map = (
-    gdf[["crop_class", "crop_number"]]
-    .drop_duplicates()
-    .set_index("crop_number")["crop_class"]
-    .to_dict()
-)
+        mun_train, mun_temp = train_test_split(
+            unique_mun, test_size=0.30, random_state=13
+        )
 
-unique_mun = gdf["CD_MUN"].unique()
+        mun_val, mun_test = train_test_split(mun_temp, test_size=0.50, random_state=13)
 
-mun_train, mun_temp = train_test_split(unique_mun, test_size=0.30, random_state=13)
+        gdf_train = gdf[gdf["CD_MUN"].isin(mun_train)].copy()
+        gdf_val = gdf[gdf["CD_MUN"].isin(mun_val)].copy()
+        gdf_test = gdf[gdf["CD_MUN"].isin(mun_test)].copy()
+    else:
+        # New path for small percent modes: 10, 1, 0.1
+        gdf_train, gdf_val, gdf_test = split_with_percent_and_class_coverage(
+            gdf, percent=TRAIN_PERCENT, max_attempts=500
+        )
 
-mun_val, mun_test = train_test_split(mun_temp, test_size=0.50, random_state=13)
+    train_dataset = AgriGEELiteDataset(
+        gdf_train,
+        "/home/m/Downloads/df_sits.parquet",
+        transform=aug_transforms,
+        timestamp_processing="days_after_start",
+    )
 
-gdf_train = gdf[gdf["CD_MUN"].isin(mun_train)].copy()
-gdf_val = gdf[gdf["CD_MUN"].isin(mun_val)].copy()
-gdf_test = gdf[gdf["CD_MUN"].isin(mun_test)].copy()
+    val_dataset = AgriGEELiteDataset(
+        gdf_val,
+        "/home/m/Downloads/df_sits.parquet",
+        transform=transforms,
+        timestamp_processing="days_after_start",
+    )
 
-print("Distribuição das classes - Treino")
-print(gdf_train.crop_class.value_counts())
+    test_dataset = AgriGEELiteDataset(
+        gdf_test,
+        "/home/m/Downloads/df_sits.parquet",
+        transform=transforms,
+        timestamp_processing="days_after_start",
+    )
 
-print("Distribuição das classes - Validação")
-print(gdf_val.crop_class.value_counts())
+elif DATASET in {"texas", "california"}:
+    if TRAIN_PERCENT == 70:
+        split_string = "npz"
+    elif TRAIN_PERCENT == 10:
+        split_string = "10_10_80"
+    elif TRAIN_PERCENT == 1:
+        split_string = "1_1_98"
+    elif TRAIN_PERCENT == 0.1:
+        split_string = "001_001_998"
+    else:
+        raise ValueError(f"TRAIN_PERCENT {TRAIN_PERCENT} not supported for {DATASET}")
 
-print("Distribuição das classes - Teste")
-print(gdf_test.crop_class.value_counts())
-
-print(f"Municípios Treino: {len(mun_train)} - {len(gdf_train)} linhas")
-print(f"Municípios Validação: {len(mun_val)} - {len(gdf_val)} linhas")
-print(f"Municípios Teste: {len(mun_test)} - {len(gdf_test)} linhas")
-
-train_dataset = AgriGEELiteDataset(
-    gdf_train,
-    "/home/m/Downloads/df_sits.parquet",
-    transform=aug_transforms,
-    timestamp_processing="days_after_start",
-)
-
-val_dataset = AgriGEELiteDataset(
-    gdf_val,
-    "/home/m/Downloads/df_sits.parquet",
-    transform=transforms,
-    timestamp_processing="days_after_start",
-)
-
-test_dataset = AgriGEELiteDataset(
-    gdf_test,
-    "/home/m/Downloads/df_sits.parquet",
-    transform=transforms,
-    timestamp_processing="days_after_start",
-)
+    train_dataset = SitsFinetuneDatasetFromNpz(
+        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_{split_string}/train.npz",
+        transform=transforms,
+    )
+    val_dataset = SitsFinetuneDatasetFromNpz(
+        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_{split_string}/val.npz",
+        transform=transforms,
+    )
+    test_dataset = SitsFinetuneDatasetFromNpz(
+        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_{split_string}/test.npz",
+        transform=transforms,
+    )
+else:
+    raise ValueError(f"Dataset {DATASET} not recognized.")
 
 
 class Phase1_Classifier(pl.LightningModule):
@@ -158,9 +215,14 @@ class Phase1_Classifier(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        self.backbone = SITSConvNext(num_classes=num_classes)
-        # self.backbone = SITSBertPlusPlus(num_classes=num_classes)
-
+        BACKBONES = {
+            "BERT": SITSBert,
+            "BERTPP": SITSBertPlusPlus,
+            "LSTM": SITS_LSTM,
+            "CNN": SITSConvNext,
+            "MAMBA": SITSMamba,
+        }
+        self.backbone = BACKBONES[MODEL_NAME](num_classes=num_classes)
         self.criterion = nn.CrossEntropyLoss()
 
         self.train_acc = MulticlassAccuracy(num_classes=num_classes, average="weighted")

@@ -21,7 +21,7 @@ MASK = np.array(
 MASK_RATE = 0.15
 
 
-def new_random_masking(ts, ts_length, seq_len, _):
+def random_masking(ts, ts_length, seq_len, _):
     ts_masking = ts.copy()
     mask = np.zeros((seq_len,), dtype=int)
 
@@ -30,29 +30,6 @@ def new_random_masking(ts, ts_length, seq_len, _):
         if prob < MASK_RATE:
             mask[i] = 1
             ts_masking[i, :] = MASK
-
-    return ts_masking, mask
-
-
-def random_masking(ts, ts_length, seq_len, dimension):
-    ts_masking = ts.copy()
-    mask = np.zeros((seq_len,), dtype=int)
-
-    for i in range(ts_length):
-        prob = random.random()
-        if prob < 0.15:
-            prob /= 0.15
-            mask[i] = 1
-
-            if prob < 0.5:
-                ts_masking[i, :] += np.random.uniform(
-                    low=-0.5, high=0, size=(dimension,)
-                )
-
-            else:
-                ts_masking[i, :] += np.random.uniform(
-                    low=0, high=0.5, size=(dimension,)
-                )
 
     return ts_masking, mask
 
@@ -80,7 +57,7 @@ class AddCorruptedSample:
     def __call__(self, sample):
         x = sample["x"]
         doy = sample["doy"]
-        corrupted_x, corrupted_mask = new_random_masking(
+        corrupted_x, corrupted_mask = random_masking(
             x, x.shape[0] - np.sum(doy == 0), x.shape[0], x.shape[1]
         )
         sample["corrupted_x"] = corrupted_x

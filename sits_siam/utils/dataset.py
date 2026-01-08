@@ -12,6 +12,7 @@ import os
 
 from sklearn.utils.class_weight import compute_class_weight
 
+
 class SitsDatasetFromDataframe(torch.utils.data.Dataset):
     """
     Dataset class for satellite image time series data from pd.DataFrame.
@@ -244,6 +245,14 @@ class SitsFinetuneDatasetFromNpz(torch.utils.data.Dataset):
         self.ys = data["ys"].astype(np.int16)
         self.transform = transform
 
+    def get_weights_for_WeightedRandomSampler(self) -> torch.Tensor:
+        targets = self.ys
+        classes, counts = np.unique(targets, return_counts=True)
+        class_weights = 1.0 / counts
+        weight_map = dict(zip(classes, class_weights))
+        sample_weights = np.array([weight_map[t] for t in targets])
+        return torch.from_numpy(sample_weights).double()
+
     def __len__(self):
         return len(self.ts)
 
@@ -263,61 +272,63 @@ class SitsFinetuneDatasetFromNpz(torch.utils.data.Dataset):
     def sequence_length(self):
         return self.ts.shape[1]
 
-    def get_class_weights(self) -> torch.Tensor:        
-            y_labels = self.ys.flatten() 
-            classes = np.unique(y_labels)
-            
-            weights = compute_class_weight(
-                class_weight="balanced",
-                classes=classes,
-                y=y_labels
-            )
-    
-            class_weights_tensor = torch.tensor(weights, dtype=torch.float32, device="cpu")             
-            return class_weights_tensor
+    def get_class_weights(self) -> torch.Tensor:
+        y_labels = self.ys.flatten()
+        classes = np.unique(y_labels)
+
+        weights = compute_class_weight(
+            class_weight="balanced", classes=classes, y=y_labels
+        )
+
+        class_weights_tensor = torch.tensor(weights, dtype=torch.float32, device="cpu")
+        return class_weights_tensor
 
     def get_class_names(self) -> list[str]:
-            full_path_str = str(self.npz_file).lower()
-            num_classes = self.num_classes
-            class_names_full: list[str]
-            region_name: str
-    
-            if 'texas' in full_path_str:
-                region_name = 'texas'
-                class_names_full = [
-                    'Corn',
-                    'Cotton',
-                    'Oats',
-                    'Pasture',
-                    'Rice',
-                    'Sorghum',
-                    'Wheat'
-                ]
-            elif 'california' in full_path_str:
-                region_name = 'california'
-                class_names_full = [
-                    'Alfalfa',
-                    'Almonds',
-                    'Citrus',
-                    'Corn',
-                    'Cotton',
-                    'Grapes',
-                    'Pasture',
-                    'Pistachios',
-                    'Rice',
-                    'Tomatoes',
-                    'Walnuts',
-                    'Wildflowers',
-                    'Wheat and Corn',
-                    'Wheat'
-                ]
-            else:
-                raise Exception(f"Caminho do arquivo '{self.npz_file}' não contém 'texas' nem 'california' para identificar os nomes das classes.")
-                
-            if num_classes > len(class_names_full):
-                raise Exception(f"O dataset possui {num_classes} classes, mas o mapeamento de nomes de classe para '{region_name}' suporta apenas {len(class_names_full)}.")
-                
-            return class_names_full[:num_classes]
+        full_path_str = str(self.npz_file).lower()
+        num_classes = self.num_classes
+        class_names_full: list[str]
+        region_name: str
+
+        if "texas" in full_path_str:
+            region_name = "texas"
+            class_names_full = [
+                "Corn",
+                "Cotton",
+                "Oats",
+                "Pasture",
+                "Rice",
+                "Sorghum",
+                "Wheat",
+            ]
+        elif "california" in full_path_str:
+            region_name = "california"
+            class_names_full = [
+                "Alfalfa",
+                "Almonds",
+                "Citrus",
+                "Corn",
+                "Cotton",
+                "Grapes",
+                "Pasture",
+                "Pistachios",
+                "Rice",
+                "Tomatoes",
+                "Walnuts",
+                "Wildflowers",
+                "Wheat and Corn",
+                "Wheat",
+            ]
+        else:
+            raise Exception(
+                f"Caminho do arquivo '{self.npz_file}' não contém 'texas' nem 'california' para identificar os nomes das classes."
+            )
+
+        if num_classes > len(class_names_full):
+            raise Exception(
+                f"O dataset possui {num_classes} classes, mas o mapeamento de nomes de classe para '{region_name}' suporta apenas {len(class_names_full)}."
+            )
+
+        return class_names_full[:num_classes]
 
 
 class AgriGEELiteDataset(torch.utils.data.Dataset):
@@ -378,7 +389,7 @@ class AgriGEELiteDataset(torch.utils.data.Dataset):
         self.num_classes = int(self.gdf["crop_class"].nunique())
 
     def to_numpy_arrays_wo_for(self):
-        n_samples = len(self.gdf) # O tamanho esperado de parcelas (71173 no Treino)
+        n_samples = len(self.gdf)  # O tamanho esperado de parcelas (71173 no Treino)
         n_bands = len(self.band_order)
 
         X = np.full((n_samples, self.max_seq_len, n_bands), 0, dtype=np.float16)
@@ -388,10 +399,10 @@ class AgriGEELiteDataset(torch.utils.data.Dataset):
 
         # 1. Cria o mapa de índice da parcela
         index_map = {idx: i for i, idx in enumerate(self.gdf["indexnum"].values)}
-        
+
         # 2. Realiza o mapeamento para obter o índice do array X
         sits_sorted["parcel_idx"] = sits_sorted["indexnum"].map(index_map)
-        
+
         # --- NOVO: REMOVER LINHAS COM VALORES NaN APÓS O MAPA ---
         # Se sits_df tem indexnum que não está em gdf, o map retorna NaN.
         # Precisamos remover essas linhas antes de converter para int.
@@ -418,7 +429,7 @@ class AgriGEELiteDataset(torch.utils.data.Dataset):
         T[pi, si] = time_values
 
         return X, T
-    
+
     def _to_numpy_arrays_wo_for(self):
         n_samples = len(self.gdf)
         n_bands = len(self.band_order)
@@ -455,9 +466,7 @@ class AgriGEELiteDataset(torch.utils.data.Dataset):
         # Calcula os pesos de classe. 'balanced' ajusta inversamente
         # a frequência da classe no conjunto de dados.
         weights = compute_class_weight(
-            class_weight="balanced",
-            classes=classes,
-            y=y_labels
+            class_weight="balanced", classes=classes, y=y_labels
         )
 
         # Converte o array NumPy de pesos em um tensor PyTorch
@@ -500,6 +509,7 @@ class AgriGEELiteDataset(torch.utils.data.Dataset):
         weight_map = dict(zip(classes, class_weights))
         sample_weights = np.array([weight_map[t] for t in targets])
         return torch.from_numpy(sample_weights).double()
+
 
 if __name__ == "__main__":
     import pandas as pd

@@ -27,6 +27,7 @@ from tqdm.std import tqdm
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
+from sklearn.model_selection import train_test_split
 import optuna
 
 patch_sklearn()
@@ -227,7 +228,10 @@ def predict_and_save_predictions(
 
     if hasattr(dataset, "gdf"):
         display_string += "Merging predictions with original GeoDataFrame...\n"
-        final_gdf = dataset.gdf.copy()
+        try:
+            final_gdf = dataset.gdf.copy()
+        except:  # noqa: E722
+            final_gdf = pd.DataFrame()
 
         if len(final_gdf) != len(y_pred_names):
             display_string += f"WARNING: Dataset length ({len(final_gdf)}) differs from predictions ({len(y_pred_names)}).\n"
@@ -593,3 +597,49 @@ def save_other_model(model, mlflow_logger):
         file_path = os.path.join(tmpdir, "model.joblib")
         joblib.dump(model, file_path)
         mlflow_logger.experiment.log_artifact(mlflow_logger.run_id, file_path)
+
+
+def split_with_percent_and_class_coverage(
+    gdf_all: gpd.GeoDataFrame, percent: float, max_attempts: int = 200
+):
+    p = percent / 100.0
+    if p <= 0 or p >= 0.5:
+        raise ValueError("Percent must be in (0, 50); received %s" % percent)
+
+    unique_mun_local = gdf_all["CD_MUN"].unique()
+    classes_full = set(gdf_all["crop_class"].unique())
+
+    val_on_temp = p / (1.0 - p)
+    test_on_temp = 1.0 - val_on_temp
+
+    for attempt_seed in range(0, max_attempts):
+        mun_train_local, mun_temp_local = train_test_split(
+            unique_mun_local, test_size=(1.0 - p), random_state=attempt_seed
+        )
+
+        mun_val_local, mun_test_local = train_test_split(
+            mun_temp_local, test_size=test_on_temp, random_state=attempt_seed
+        )
+
+        gdf_train_local = gdf_all[gdf_all["CD_MUN"].isin(mun_train_local)].copy()
+        gdf_val_local = gdf_all[gdf_all["CD_MUN"].isin(mun_val_local)].copy()
+        gdf_test_local = gdf_all[gdf_all["CD_MUN"].isin(mun_test_local)].copy()
+
+        train_classes = set(pd.unique(gdf_train_local["crop_class"]))
+        val_classes = set(pd.unique(gdf_val_local["crop_class"]))
+        test_classes = set(pd.unique(gdf_test_local["crop_class"]))
+
+        if (
+            classes_full.issubset(train_classes)
+            and classes_full.issubset(val_classes)
+            and classes_full.issubset(test_classes)
+        ):
+            print("SEED USADA PARA DIVISÃO:", attempt_seed)
+            return gdf_train_local, gdf_val_local, gdf_test_local
+
+    raise RuntimeError(
+        (
+            "Não foi possível obter divisão com cobertura de classes em todos os conjuntos "
+            f"após {max_attempts} tentativas variando a seed. Ajuste o percentual ({percent}%) ou verifique o dataset."
+        )
+    )
