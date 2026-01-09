@@ -226,7 +226,7 @@ else:
     raise ValueError(f"Dataset {DATASET} not recognized.")
 
 emb_sizes = train_dataset[0]["x"].flatten().shape[0]
-X_COLUMNS = [f"x_{i}" for i in range(emb_sizes)]
+X_COLUMNS = [f"emb_{i}" for i in range(emb_sizes)]
 
 train_features = np.zeros((len(train_dataset), emb_sizes), dtype=np.float32)
 train_val_features = np.zeros((len(train_val_dataset), emb_sizes), dtype=np.float32)
