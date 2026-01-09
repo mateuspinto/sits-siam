@@ -378,7 +378,13 @@ class KNNCallback(pl.Callback):
 
 
 def run_gemos(
-    train_gdf, train_val_gdf, val_gdf, test_gdf, mlflow_logger, preprocess=False
+    train_gdf,
+    train_val_gdf,
+    val_gdf,
+    test_gdf,
+    mlflow_logger,
+    preprocess=False,
+    n_trials=30,
 ):
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -468,7 +474,7 @@ def run_gemos(
                             (
                                 "gmm",
                                 GaussianMixture(
-                                    n_components=3,
+                                    n_components=1,
                                     random_state=42,
                                     init_params="k-means++",
                                 ),
@@ -498,7 +504,9 @@ def run_gemos(
                     sampler=optuna.samplers.TPESampler(seed=42),
                     study_name="gemmos",
                 )
-                study.optimize(objective, n_trials=30, n_jobs=4, show_progress_bar=True)
+                study.optimize(
+                    objective, n_trials=n_trials, n_jobs=25, show_progress_bar=True
+                )
 
                 best_gmm = GaussianMixture(
                     **study.best_params, random_state=42, init_params="k-means++"

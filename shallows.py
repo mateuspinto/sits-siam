@@ -33,6 +33,7 @@ from sits_siam.auxiliar import (
     split_with_percent_and_class_coverage,
     log_results_in_mlflow,
     check_if_already_ran,
+    run_gemos,
 )
 from sits_siam.utils import AgriGEELiteDataset, SitsFinetuneDatasetFromNpz
 
@@ -79,15 +80,19 @@ TAGS = {
 EXPERIMENT_NAME = f"{DATASET}-finetuning"
 RUN_NAME_SUFFIX = f"{TRAIN_PERCENT}"
 
-if check_if_already_ran(
-    EXPERIMENT_NAME,
-    f"RF-{RUN_NAME_SUFFIX}",
-) and check_if_already_ran(
-    EXPERIMENT_NAME,
-    f"LGBM-{RUN_NAME_SUFFIX}",
-) and check_if_already_ran(
-    EXPERIMENT_NAME,
-    f"SVM-{RUN_NAME_SUFFIX}",
+if (
+    check_if_already_ran(
+        EXPERIMENT_NAME,
+        f"RF-{RUN_NAME_SUFFIX}",
+    )
+    and check_if_already_ran(
+        EXPERIMENT_NAME,
+        f"LGBM-{RUN_NAME_SUFFIX}",
+    )
+    and check_if_already_ran(
+        EXPERIMENT_NAME,
+        f"SVM-{RUN_NAME_SUFFIX}",
+    )
 ):
     print("All models already ran. Exiting.")
     exit(0)
@@ -344,7 +349,7 @@ def train_lgbm(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name):
 
     mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, run_name=run_name)
 
-    log_results_in_mlflow(gdf_train, gdf_train_val, gdf_val, gdf_test, mlflow_logger)
+    run_gemos(gdf_train, gdf_train_val, gdf_val, gdf_test, mlflow_logger, True, 100)
     save_other_model(lgbm, mlflow_logger)
 
 
@@ -449,7 +454,7 @@ def train_svc(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name, n_trials=60
             mlflow_logger.run_id, param_name, param_value
         )
 
-    log_results_in_mlflow(gdf_train, gdf_train_val, gdf_val, gdf_test, mlflow_logger)
+    run_gemos(gdf_train, gdf_train_val, gdf_val, gdf_test, mlflow_logger, True, 100)
     save_other_model(svc_best, mlflow_logger)
 
 
@@ -539,7 +544,7 @@ def train_rf(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name, n_trials=30)
             mlflow_logger.run_id, param_name, param_value
         )
 
-    log_results_in_mlflow(gdf_train, gdf_train_val, gdf_val, gdf_test, mlflow_logger)
+    run_gemos(gdf_train, gdf_train_val, gdf_val, gdf_test, mlflow_logger, True, 100)
     save_other_model(rf_best, mlflow_logger)
 
 
