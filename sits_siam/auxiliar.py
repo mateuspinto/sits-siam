@@ -401,156 +401,186 @@ def run_gemos(
     classes = train_gdf["y_true"].unique()
 
     for cls in classes:
-        X_train = (
-            train_gdf[(train_gdf["y_true"] == cls) & (train_gdf["right_pred"])][
-                X_columns
-            ]
-            .to_numpy()
-            .astype(np.float32)
-        )
+        try:
+            X_train = (
+                train_gdf[(train_gdf["y_true"] == cls) & (train_gdf["right_pred"])][
+                    X_columns
+                ]
+                .to_numpy()
+                .astype(np.float32)
+            )
 
-        val_cls = val_gdf[val_gdf["y_true"] == cls]
-        X_val_pos = (
-            val_cls[val_cls["right_pred"]][X_columns].to_numpy().astype(np.float32)
-        )
-        X_val_neg = (
-            val_cls[~val_cls["right_pred"]][X_columns].to_numpy().astype(np.float32)
-        )
+            val_cls = val_gdf[val_gdf["y_true"] == cls]
+            X_val_pos = (
+                val_cls[val_cls["right_pred"]][X_columns].to_numpy().astype(np.float32)
+            )
+            X_val_neg = (
+                val_cls[~val_cls["right_pred"]][X_columns].to_numpy().astype(np.float32)
+            )
 
-        def objective(trial):
-            params = {
-                "n_components": trial.suggest_int("n_components", 1, 10),
-                "covariance_type": trial.suggest_categorical(
-                    "covariance_type", ["full", "tied", "diag", "spherical"]
-                ),
-                "reg_covar": trial.suggest_float("reg_covar", 1e-6, 1e-3, log=True),
-            }
+            def objective(trial):
+                params = {
+                    "n_components": trial.suggest_int("n_components", 1, 10),
+                    "covariance_type": trial.suggest_categorical(
+                        "covariance_type", ["full", "tied", "diag", "spherical"]
+                    ),
+                    "reg_covar": trial.suggest_float("reg_covar", 1e-6, 1e-3, log=True),
+                }
 
-            if preprocess:
-                gmm = Pipeline(
-                    [
-                        ("scaler", StandardScaler()),
-                        ("pca", PCA(random_state=42)),
-                        (
-                            "gmm",
-                            GaussianMixture(
-                                **params, random_state=42, init_params="k-means++"
+                if preprocess:
+                    gmm = Pipeline(
+                        [
+                            ("scaler", StandardScaler()),
+                            ("pca", PCA(random_state=42)),
+                            (
+                                "gmm",
+                                GaussianMixture(
+                                    **params, random_state=42, init_params="k-means++"
+                                ),
                             ),
-                        ),
-                    ]
-                )
+                        ]
+                    )
+                else:
+                    gmm = GaussianMixture(
+                        **params, random_state=42, init_params="k-means++"
+                    )
+
+                try:
+                    gmm.fit(X_train)
+                    pos_scores = gmm.score_samples(X_val_pos)
+                    neg_scores = gmm.score_samples(X_val_neg)
+
+                    y_scores = np.concatenate([pos_scores, neg_scores])
+                    y_true_binary = np.concatenate(
+                        [np.ones(len(pos_scores)), np.zeros(len(neg_scores))]
+                    )
+
+                    return roc_auc_score(y_true_binary, y_scores)
+                except Exception:
+                    return 0.0
+
+            if len(X_train) < 10 or len(X_val_pos) < 2 or len(X_val_neg) < 2:
+                if preprocess:
+                    best_gmm = Pipeline(
+                        [
+                            ("scaler", StandardScaler()),
+                            ("pca", PCA(random_state=42)),
+                            (
+                                "gmm",
+                                GaussianMixture(
+                                    n_components=3,
+                                    random_state=42,
+                                    init_params="k-means++",
+                                ),
+                            ),
+                        ]
+                    )
+                else:
+                    best_gmm = GaussianMixture(
+                        n_components=1, random_state=42, init_params="k-means++"
+                    )
+                best_gmm.fit(X_train)
+
+                # Calculate threshold as the percentile 2.5 of the scores on the train set
+                best_threshold = np.percentile(best_gmm.score_samples(X_train), 2.5)
+                results[cls] = {
+                    "threshold": float(best_threshold),
+                    "auc": float("nan"),
+                    "params": {
+                        "random_state": 42,
+                        "n_components": 3,
+                        "init_params": "k-means++",
+                    },
+                }
             else:
-                gmm = GaussianMixture(
-                    **params, random_state=42, init_params="k-means++"
+                study = optuna.create_study(
+                    direction="maximize",
+                    sampler=optuna.samplers.TPESampler(seed=42),
+                    study_name="gemmos",
                 )
+                study.optimize(objective, n_trials=30, n_jobs=4, show_progress_bar=True)
 
-            try:
-                gmm.fit(X_train)
-                pos_scores = gmm.score_samples(X_val_pos)
-                neg_scores = gmm.score_samples(X_val_neg)
+                best_gmm = GaussianMixture(
+                    **study.best_params, random_state=42, init_params="k-means++"
+                )
+                best_gmm.fit(X_train)
 
+                pos_scores = best_gmm.score_samples(X_val_pos)
+                neg_scores = best_gmm.score_samples(X_val_neg)
                 y_scores = np.concatenate([pos_scores, neg_scores])
                 y_true_binary = np.concatenate(
                     [np.ones(len(pos_scores)), np.zeros(len(neg_scores))]
                 )
 
-                return roc_auc_score(y_true_binary, y_scores)
-            except Exception:
-                return 0.0
-
-        if len(X_train) < 10 or len(X_val_pos) < 2 or len(X_val_neg) < 2:
-            if preprocess:
-                best_gmm = Pipeline(
-                    [
-                        ("scaler", StandardScaler()),
-                        ("pca", PCA(random_state=42)),
-                        (
-                            "gmm",
-                            GaussianMixture(
-                                n_components=3, random_state=42, init_params="k-means++"
-                            ),
-                        ),
-                    ]
+                precision, recall, thresholds = precision_recall_curve(
+                    y_true_binary, y_scores
                 )
-            else:
-                best_gmm = GaussianMixture(
-                    n_components=1, random_state=42, init_params="k-means++"
-                )
-            best_gmm.fit(X_train)
+                f1_scores = 2 * (precision * recall) / (precision + recall + 1e-10)
+                best_threshold = thresholds[np.argmax(f1_scores[:-1])]
+                results[cls] = {
+                    "threshold": float(best_threshold),
+                    "auc": float(study.best_value),
+                    "params": study.best_params,
+                }
 
-            # Calculate threshold as the percentile 2.5 of the scores on the train set
-            best_threshold = np.percentile(best_gmm.score_samples(X_train), 2.5)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                file_path = os.path.join(tmpdir, f"{cls}.joblib")
+                joblib.dump(best_gmm, file_path)
+                mlflow_logger.experiment.log_artifact(mlflow_logger.run_id, file_path)
+
+            gmms[cls] = best_gmm
+
+            print(
+                f"Class {cls}: AUC {results[cls]['auc']:.4f} | Threshold {results[cls]['threshold']:.4f}, best params: {results[cls]['params']}"
+            )
+
+            mask = train_val_gdf["y_pred"] == cls
+            if mask.any():
+                X_subset = train_val_gdf.loc[mask, X_columns]
+                scores = best_gmm.score_samples(X_subset)
+
+                train_val_gdf.loc[mask, "gmm_score"] = scores
+
+            mask = val_gdf["y_pred"] == cls
+            if mask.any():
+                X_subset = val_gdf.loc[mask, X_columns]
+                scores = best_gmm.score_samples(X_subset)
+
+                val_gdf.loc[mask, "gmm_score"] = scores
+
+            mask = test_gdf["y_pred"] == cls
+            if mask.any():
+                X_subset = test_gdf.loc[mask, X_columns]
+                scores = best_gmm.score_samples(X_subset)
+
+                test_gdf.loc[mask, "gmm_score"] = scores
+
+        except Exception as e:
+            print(f"Erro ao processar classe {cls}: {e}")
+            print(f"Atribuindo gmm_score=0 e gmm_gemos_anomaly=False para classe {cls}")
+
+            # Set gmm_score = 0 for all samples of this class
+            mask_train_val = train_val_gdf["y_pred"] == cls
+            if mask_train_val.any():
+                train_val_gdf.loc[mask_train_val, "gmm_score"] = 0.0
+
+            mask_val = val_gdf["y_pred"] == cls
+            if mask_val.any():
+                val_gdf.loc[mask_val, "gmm_score"] = 0.0
+
+            mask_test = test_gdf["y_pred"] == cls
+            if mask_test.any():
+                test_gdf.loc[mask_test, "gmm_score"] = 0.0
+
+            # Store a dummy result indicating failure
             results[cls] = {
-                "threshold": float(best_threshold),
+                "threshold": float("-inf"),  # Will make all samples non-anomalous
                 "auc": float("nan"),
-                "params": {
-                    "random_state": 42,
-                    "n_components": 3,
-                    "init_params": "k-means++",
-                },
-            }
-        else:
-            study = optuna.create_study(
-                direction="maximize",
-                sampler=optuna.samplers.TPESampler(seed=42),
-                study_name="gemmos",
-            )
-            study.optimize(objective, n_trials=30, n_jobs=4, show_progress_bar=True)
-
-            best_gmm = GaussianMixture(
-                **study.best_params, random_state=42, init_params="k-means++"
-            )
-            best_gmm.fit(X_train)
-
-            pos_scores = best_gmm.score_samples(X_val_pos)
-            neg_scores = best_gmm.score_samples(X_val_neg)
-            y_scores = np.concatenate([pos_scores, neg_scores])
-            y_true_binary = np.concatenate(
-                [np.ones(len(pos_scores)), np.zeros(len(neg_scores))]
-            )
-
-            precision, recall, thresholds = precision_recall_curve(
-                y_true_binary, y_scores
-            )
-            f1_scores = 2 * (precision * recall) / (precision + recall + 1e-10)
-            best_threshold = thresholds[np.argmax(f1_scores[:-1])]
-            results[cls] = {
-                "threshold": float(best_threshold),
-                "auc": float(study.best_value),
-                "params": study.best_params,
+                "params": {},
+                "error": str(e),
             }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file_path = os.path.join(tmpdir, f"{cls}.joblib")
-            joblib.dump(best_gmm, file_path)
-            mlflow_logger.experiment.log_artifact(mlflow_logger.run_id, file_path)
-
-        gmms[cls] = best_gmm
-
-        print(
-            f"Class {cls}: AUC {results[cls]['auc']:.4f} | Threshold {results[cls]['threshold']:.4f}, best params: {results[cls]['params']}"
-        )
-
-        mask = train_val_gdf["y_pred"] == cls
-        if mask.any():
-            X_subset = train_val_gdf.loc[mask, X_columns]
-            scores = best_gmm.score_samples(X_subset)
-
-            train_val_gdf.loc[mask, "gmm_score"] = scores
-
-        mask = val_gdf["y_pred"] == cls
-        if mask.any():
-            X_subset = val_gdf.loc[mask, X_columns]
-            scores = best_gmm.score_samples(X_subset)
-
-            val_gdf.loc[mask, "gmm_score"] = scores
-
-        mask = test_gdf["y_pred"] == cls
-        if mask.any():
-            X_subset = test_gdf.loc[mask, X_columns]
-            scores = best_gmm.score_samples(X_subset)
-
-            test_gdf.loc[mask, "gmm_score"] = scores
+            continue
 
     print("GMM-GEMOS Thresholds:")
     gmm_gemos_threshold = {cls: data["threshold"] for cls, data in results.items()}

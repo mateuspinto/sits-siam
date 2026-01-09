@@ -1,3 +1,4 @@
+import argparse
 import copy
 import math
 
@@ -29,38 +30,61 @@ from sits_siam.augment import (
     ToPytorchTensor,
 )
 from sits_siam.auxiliar import (
-    beautify_prints,
     predict_and_save_predictions,
     setup_seed,
     run_gemos,
     save_pytorch_model,
+    split_with_percent_and_class_coverage,
 )
 from sits_siam.utils import AgriGEELiteDataset, SitsFinetuneDatasetFromNpz
 from sits_siam.models import SITS_MLP_Backbone
 
-DATASET = "brazil"
-TRAIN_SIZE = 70
+patch_sklearn()
+torch.set_float32_matmul_precision("high")
+setup_seed()
+# beautify_prints()
+
+
+BATCHED_ARGS_PARSER = argparse.ArgumentParser(add_help=False)
+BATCHED_ARGS_PARSER.add_argument(
+    "--train_percent",
+    type=float,
+    default=70.0,
+)
+BATCHED_ARGS_PARSER.add_argument(
+    "--dataset",
+    type=str,
+    choices=["brazil", "california", "texas", "pastis"],
+    default="brazil",
+)
+BATCHED_ARGS_PARSER.add_argument(
+    "--gpu",
+    type=int,
+    default=0,
+)
+_parsed_args, _ = BATCHED_ARGS_PARSER.parse_known_args()
+TRAIN_PERCENT = float(_parsed_args.train_percent)
+GPU_ID = _parsed_args.gpu
+DATASET = _parsed_args.dataset
 BATCH_SIZE = 2 * 512
+
 MAX_EPOCHS = 100
+if TRAIN_PERCENT <= 1:
+    MAX_EPOCHS = 200
 NUM_WARMUP_EPOCHS = 10
 BASE_LR = 1e-4
-PRETRAIN_PATH = ""
 
 TAGS = {
     "dataset": DATASET,
     "batch_size": BATCH_SIZE,
-    "max_epochs_p1": MAX_EPOCHS,
-    "pretrain_path": PRETRAIN_PATH,
+    "max_epochs": MAX_EPOCHS,
     "num_warmup_epochs": NUM_WARMUP_EPOCHS,
     "base_lr": BASE_LR,
+    "train_percent": TRAIN_PERCENT,
+    "model": "MLP",
 }
-RUN_NAME = f"MLP-{TRAIN_SIZE}"
-
-
-patch_sklearn()
-torch.set_float32_matmul_precision("high")
-setup_seed()
-beautify_prints()
+RUN_NAME = f"MLP-{TRAIN_PERCENT}"
+EXPERIMENT_NAME = f"{DATASET}-finetuning"
 
 transforms = Pipeline(
     [
@@ -88,56 +112,84 @@ aug_transforms = Pipeline(
     ]
 )
 
-# train_dataset = SitsFinetuneDatasetFromNpz("data/texas_70_15_15/train.npz", transform=transforms)
-# val_dataset = SitsFinetuneDatasetFromNpz("data/texas_70_15_15/val.npz", transform=transforms)
-# test_dataset = SitsFinetuneDatasetFromNpz("data/texas_70_15_15/test.npz", transform=transforms)
+if DATASET == "brazil":
+    gdf = gpd.read_parquet("data/agl/gdf.parquet")
 
+    class_map = (
+        gdf[["crop_class", "crop_number"]]
+        .drop_duplicates()
+        .set_index("crop_number")["crop_class"]
+        .to_dict()
+    )
 
-gdf = gpd.read_parquet("/home/m/Downloads/gdf.parquet")
+    if abs(TRAIN_PERCENT - 70.0) < 1e-9:
+        unique_mun = gdf["CD_MUN"].unique()
 
-class_map = (
-    gdf[["crop_class", "crop_number"]]
-    .drop_duplicates()
-    .set_index("crop_number")["crop_class"]
-    .to_dict()
-)
+        mun_train, mun_temp = train_test_split(
+            unique_mun, test_size=0.30, random_state=13
+        )
 
-unique_mun = gdf["CD_MUN"].unique()
+        mun_val, mun_test = train_test_split(mun_temp, test_size=0.50, random_state=13)
 
-mun_train, mun_temp = train_test_split(unique_mun, test_size=0.30, random_state=13)
+        gdf_train = gdf[gdf["CD_MUN"].isin(mun_train)].copy()
+        gdf_val = gdf[gdf["CD_MUN"].isin(mun_val)].copy()
+        gdf_test = gdf[gdf["CD_MUN"].isin(mun_test)].copy()
+    else:
+        # New path for small percent modes: 10, 1, 0.1
+        gdf_train, gdf_val, gdf_test = split_with_percent_and_class_coverage(
+            gdf, percent=TRAIN_PERCENT, max_attempts=500
+        )
 
+    train_dataset = AgriGEELiteDataset(
+        gdf_train,
+        "data/agl/df_sits.parquet",
+        transform=aug_transforms,
+        timestamp_processing="days_after_start",
+    )
 
-mun_val, mun_test = train_test_split(mun_temp, test_size=0.50, random_state=13)
+    val_dataset = AgriGEELiteDataset(
+        gdf_val,
+        "data/agl/df_sits.parquet",
+        transform=transforms,
+        timestamp_processing="days_after_start",
+    )
 
+    test_dataset = AgriGEELiteDataset(
+        gdf_test,
+        "data/agl/df_sits.parquet",
+        transform=transforms,
+        timestamp_processing="days_after_start",
+    )
 
-gdf_train = gdf[gdf["CD_MUN"].isin(mun_train)].copy()
-gdf_val = gdf[gdf["CD_MUN"].isin(mun_val)].copy()
-gdf_test = gdf[gdf["CD_MUN"].isin(mun_test)].copy()
+elif DATASET in {"texas", "california"}:
+    if TRAIN_PERCENT == 70:
+        split_string = "npz"
+    elif TRAIN_PERCENT == 10:
+        split_string = "10_10_80"
+    elif TRAIN_PERCENT == 1:
+        split_string = "1_1_98"
+    elif TRAIN_PERCENT == 0.1:
+        split_string = "001_001_998"
+    else:
+        raise ValueError(f"TRAIN_PERCENT {TRAIN_PERCENT} not supported for {DATASET}")
 
-print(f"Municípios Treino: {len(mun_train)} - {len(gdf_train)} linhas")
-print(f"Municípios Validação: {len(mun_val)} - {len(gdf_val)} linhas")
-print(f"Municípios Teste: {len(mun_test)} - {len(gdf_test)} linhas")
+    train_dataset = SitsFinetuneDatasetFromNpz(
+        f"data/{DATASET}_{split_string}/train.npz",
+        transform=aug_transforms,
+    )
+    val_dataset = SitsFinetuneDatasetFromNpz(
+        f"data/{DATASET}_{split_string}/val.npz",
+        transform=transforms,
+    )
+    test_dataset = SitsFinetuneDatasetFromNpz(
+        f"data/{DATASET}_{split_string}/test.npz",
+        transform=transforms,
+    )
 
-train_dataset = AgriGEELiteDataset(
-    gdf_train,
-    "/home/m/Downloads/df_sits.parquet",
-    transform=aug_transforms,
-    timestamp_processing="days_after_start",
-)
-
-val_dataset = AgriGEELiteDataset(
-    gdf_val,
-    "/home/m/Downloads/df_sits.parquet",
-    transform=transforms,
-    timestamp_processing="days_after_start",
-)
-
-test_dataset = AgriGEELiteDataset(
-    gdf_test,
-    "/home/m/Downloads/df_sits.parquet",
-    transform=transforms,
-    timestamp_processing="days_after_start",
-)
+    # Create class_map from dataset
+    class_map = {i: str(i) for i in range(int(train_dataset.num_classes))}
+else:
+    raise ValueError(f"Dataset {DATASET} not recognized.")
 
 
 class Phase1_Classifier(pl.LightningModule):
@@ -494,7 +546,7 @@ model_phase1 = Phase1_Classifier(
 )
 
 mlflow_logger = MLFlowLogger(
-    experiment_name=f"{DATASET}-finetuning", tags=TAGS, run_name=RUN_NAME
+    experiment_name=EXPERIMENT_NAME, tags=TAGS, run_name=RUN_NAME
 )
 
 checkpoint_cb_p1 = ModelCheckpoint(
@@ -511,6 +563,7 @@ trainer_p1 = pl.Trainer(
     max_epochs=MAX_EPOCHS,
     min_epochs=2 * NUM_WARMUP_EPOCHS,
     accelerator="gpu",
+    devices=[GPU_ID],
     precision="bf16-mixed",
     callbacks=[checkpoint_cb_p1, early_stopping_cb_p1, devicestats_monitor],
     logger=mlflow_logger,
@@ -544,6 +597,7 @@ trainer_p2 = pl.Trainer(
     max_epochs=MAX_EPOCHS,
     min_epochs=2 * NUM_WARMUP_EPOCHS,
     accelerator="gpu",
+    devices=[GPU_ID],
     precision="bf16-mixed",
     callbacks=[checkpoint_cb_p2, early_stopping_cb_p2, devicestats_monitor],
     logger=mlflow_logger,
@@ -581,6 +635,7 @@ trainer_p3 = pl.Trainer(
     max_epochs=MAX_EPOCHS,
     min_epochs=2 * NUM_WARMUP_EPOCHS,
     accelerator="gpu",
+    devices=[GPU_ID],
     precision="bf16-mixed",
     callbacks=[checkpoint_cb_p3, early_stopping_cb_p3, devicestats_monitor],
     logger=mlflow_logger,
@@ -600,13 +655,31 @@ trainer_p3.validate(model=best_model_p3, dataloaders=val_dataloader)
 print("\n--- Loading Best Phase 3 Model for Inference ---")
 best_model_p3.eval()
 
+if DATASET == "brazil":
+    train_val_dataset = AgriGEELiteDataset(
+        gdf_train,
+        "data/agl/df_sits.parquet",
+        transform=transforms,
+        timestamp_processing="days_after_start",
+    )
+elif DATASET in {"texas", "california"}:
+    if TRAIN_PERCENT == 70:
+        split_string = "npz"
+    elif TRAIN_PERCENT == 10:
+        split_string = "10_10_80"
+    elif TRAIN_PERCENT == 1:
+        split_string = "1_1_98"
+    elif TRAIN_PERCENT == 0.1:
+        split_string = "001_001_998"
+    else:
+        raise ValueError(f"TRAIN_PERCENT {TRAIN_PERCENT} not supported for {DATASET}")
 
-train_val_dataset = AgriGEELiteDataset(
-    gdf_train,
-    "/home/m/Downloads/df_sits.parquet",
-    transform=transforms,
-    timestamp_processing="days_after_start",
-)
+    train_val_dataset = SitsFinetuneDatasetFromNpz(
+        f"data/{DATASET}_{split_string}/train.npz",
+        transform=transforms,
+    )
+else:
+    raise ValueError(f"Dataset {DATASET} not recognized.")
 
 train_val_dataloader = torch.utils.data.DataLoader(
     train_val_dataset,
