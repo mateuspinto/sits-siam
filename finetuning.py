@@ -31,7 +31,7 @@ from sits_siam.augment import (
     ToPytorchTensor,
 )
 from sits_siam.auxiliar import (
-    beautify_prints,
+    load_pretrain_weights,
     predict_and_save_predictions,
     setup_seed,
     run_gemos,
@@ -88,6 +88,7 @@ TRAIN_PERCENT = float(_parsed_args.train_percent)
 GPU_ID = _parsed_args.gpu
 DATASET = _parsed_args.dataset
 MODEL_NAME = _parsed_args.model_name
+PRETRAIN = _parsed_args.pretrain
 BATCH_SIZE = 2 * 512
 
 MAX_EPOCHS=100
@@ -95,13 +96,12 @@ if TRAIN_PERCENT<=1:
     MAX_EPOCHS = 200
 NUM_WARMUP_EPOCHS = 10
 BASE_LR = 1e-4
-PRETRAIN_PATH = ""
 
 TAGS = {
     "dataset": DATASET,
     "batch_size": BATCH_SIZE,
     "max_epochs": MAX_EPOCHS,
-    "pretrain_path": PRETRAIN_PATH,
+    "pretrain": PRETRAIN,
     "num_warmup_epochs": NUM_WARMUP_EPOCHS,
     "base_lr": BASE_LR,
     "train_percent": TRAIN_PERCENT,
@@ -110,6 +110,9 @@ TAGS = {
 }
 RUN_NAME = f"{MODEL_NAME}-{TRAIN_PERCENT}"
 EXPERIMENT_NAME = f"{DATASET}-finetuning"
+
+if PRETRAIN != "off":
+    RUN_NAME += f"-{PRETRAIN}"
 
 if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
     print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
@@ -238,6 +241,12 @@ class Phase1_Classifier(pl.LightningModule):
             "MAMBA": SITSMamba,
         }
         self.backbone = BACKBONES[MODEL_NAME](num_classes=num_classes)
+
+        if PRETRAIN != "off":
+            self.backbone = load_pretrain_weights(
+                DATASET, PRETRAIN, MODEL_NAME, self.backbone
+            )
+
         self.criterion = nn.CrossEntropyLoss()
 
         self.train_acc = MulticlassAccuracy(num_classes=num_classes, average="weighted")
