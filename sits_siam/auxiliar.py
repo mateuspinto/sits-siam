@@ -37,46 +37,26 @@ import mlflow
 
 patch_sklearn()
 
+def load_pretrain_weights(dataset, pretrain_strategy, model_name, model):
+    """
+    Load model weights from a previous pretraining run logged in MLflow, but ignoring layers with name classifier
+    """
+    experiment_name = f"pretrain-{dataset}"
+    run_name = f"{model_name}-{pretrain_strategy}"
+
+    runs_df = mlflow.search_runs(experiment_names=[experiment_name])
+    runs_df = runs_df.sort_values("start_time", ascending=False).drop_duplicates(subset=["tags.mlflow.runName"]).reset_index(drop=True)
+    weight_path = runs_df[runs_df["tags.mlflow.runName"] == run_name].iloc[0].artifact_uri[7:] + "/weights.pth"
+
+    state_dict = torch.load(weight_path)
+    state_dict = {k: v for k, v in state_dict.items() if "classifier" not in k}
+    print(state_dict)
+    model.load_state_dict(state_dict, strict=False)
+    return model
 
 def check_if_already_ran(experiment_name, run_name):
     runs_df = mlflow.search_runs(experiment_names=[experiment_name])
     return len(runs_df[runs_df["tags.mlflow.runName"] == run_name]) > 0
-
-
-def log_results_in_mlflow(gdf_train, gdf_train_val, gdf_val, gdf_test, mlflow_logger):
-    for name, gdf in zip(
-        ["train_aug", "train", "val", "test"],
-        [gdf_train, gdf_train_val, gdf_val, gdf_test],
-    ):
-        acc = accuracy_score(gdf["y_true"], gdf["y_pred"])
-        f1_weighted = f1_score(gdf["y_true"], gdf["y_pred"], average="weighted")
-        f1_micro = f1_score(gdf["y_true"], gdf["y_pred"], average="micro")
-        f1_macro = f1_score(gdf["y_true"], gdf["y_pred"], average="macro")
-        gms = geometric_mean_score(gdf["y_true"], gdf["y_pred"], average="macro")
-        spec = specificity_score(gdf["y_true"], gdf["y_pred"], average="macro")
-        matt = matthews_corrcoef(gdf["y_true"], gdf["y_pred"])
-
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_accuracy", acc
-        )
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_f1_weighted", f1_weighted
-        )
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_f1_micro", f1_micro
-        )
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_f1_macro", f1_macro
-        )
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_geometric_mean_score", gms
-        )
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_specificity", spec
-        )
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_matthews_corrcoef", matt
-        )
 
 
 def setup_seed():
@@ -184,30 +164,6 @@ def predict_and_save_predictions(
 
     y_true_names = np.array([class_map[num] for num in y_true_int])
     y_pred_names = np.array([class_map[num] for num in y_pred_int])
-
-    acc = accuracy_score(y_true_names, y_pred_names)
-    f1_weighted = f1_score(y_true_names, y_pred_names, average="weighted")
-    f1_micro = f1_score(y_true_names, y_pred_names, average="micro")
-    gms = geometric_mean_score(y_true_names, y_pred_names, average="macro")
-    spec = specificity_score(y_true_names, y_pred_names, average="macro")
-    matt = matthews_corrcoef(y_true_names, y_pred_names)
-
-    mlflow_logger.experiment.log_metric(mlflow_logger.run_id, f"{name}_accuracy", acc)
-    mlflow_logger.experiment.log_metric(
-        mlflow_logger.run_id, f"{name}_f1_weighted", f1_weighted
-    )
-    mlflow_logger.experiment.log_metric(
-        mlflow_logger.run_id, f"{name}_f1_micro", f1_micro
-    )
-    mlflow_logger.experiment.log_metric(
-        mlflow_logger.run_id, f"{name}_geometric_mean_score", gms
-    )
-    mlflow_logger.experiment.log_metric(
-        mlflow_logger.run_id, f"{name}_specificity", spec
-    )
-    mlflow_logger.experiment.log_metric(
-        mlflow_logger.run_id, f"{name}_matthews_corrcoef", matt
-    )
 
     def compute_failure_metrics(y_true_correct, y_confidence, prefix) -> str:
         display_string = ""
@@ -627,36 +583,51 @@ def run_gemos(
     for name, current_gdf in zip(
         ["train_val", "val", "test"], [train_val_gdf, val_gdf, test_gdf]
     ):
-        acc = accuracy_score(
+        # GMM anomaly metrics
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_accuracy_wo_anomaly", accuracy_score(
             current_gdf[~current_gdf.gmm_gemos_anomaly].y_true,
             current_gdf[~current_gdf.gmm_gemos_anomaly].gmm_pred,
         )
-        f1_weighted = f1_score(
+        )
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_f1_weighted_wo_anomaly", f1_score(
             current_gdf[~current_gdf.gmm_gemos_anomaly].y_true,
             current_gdf[~current_gdf.gmm_gemos_anomaly].gmm_pred,
             average="weighted",
             zero_division=1,
         )
-        f1_micro = f1_score(
+        )
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_f1_micro_wo_anomaly", f1_score(
             current_gdf[~current_gdf.gmm_gemos_anomaly].y_true,
             current_gdf[~current_gdf.gmm_gemos_anomaly].gmm_pred,
             average="micro",
             zero_division=1,
         )
-
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_accuracy_wo_anomaly", acc
-        )
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_f1_weighted_wo_anomaly", f1_weighted
-        )
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_f1_micro_wo_anomaly", f1_micro
         )
         mlflow_logger.experiment.log_metric(
             mlflow_logger.run_id,
             f"{name}_anomaly_percentage",
             current_gdf.gmm_gemos_anomaly.mean(),
+        )
+
+        # Overall metrics
+        mlflow_logger.experiment.log_metric(mlflow_logger.run_id, f"{name}_accuracy", accuracy_score(current_gdf.y_true, current_gdf.y_pred))
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_f1_weighted", f1_score(current_gdf.y_true, current_gdf.y_pred, average="weighted")
+        )
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_f1_micro", f1_score(current_gdf.y_true, current_gdf.y_pred, average="micro")
+        )
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_geometric_mean_score", geometric_mean_score(current_gdf.y_true, current_gdf.y_pred, average="macro")
+        )
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_specificity", specificity_score(current_gdf.y_true, current_gdf.y_pred, average="macro")
+        )
+        mlflow_logger.experiment.log_metric(
+            mlflow_logger.run_id, f"{name}_matthews_corrcoef", matthews_corrcoef(current_gdf.y_true, current_gdf.y_pred)
         )
 
     with tempfile.TemporaryDirectory() as tmpdir:

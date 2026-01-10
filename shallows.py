@@ -31,7 +31,6 @@ from sits_siam.auxiliar import (
     setup_seed,
     save_other_model,
     split_with_percent_and_class_coverage,
-    log_results_in_mlflow,
     check_if_already_ran,
     run_gemos,
 )
