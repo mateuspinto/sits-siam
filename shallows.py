@@ -429,22 +429,26 @@ def train_svc(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name, n_trials=60
     best_params["class_weight"] = "balanced"
     best_params["random_state"] = 42
     best_params["cache_size"] = 2000
-    best_params["probability"] = False
+    best_params["probability"] = True
 
     svc_best = SVC(**best_params)
     svc_best.fit(X_train, y_train)
 
     gdf_train["y_true"] = gdf_train["crop_class"]
     gdf_train["y_pred"] = svc_best.predict(X_train)
+    gdf_train["y_proba"] = np.max(svc_best.predict_proba(X_train), axis=1)
 
     gdf_train_val["y_true"] = gdf_train_val["crop_class"]
     gdf_train_val["y_pred"] = svc_best.predict(X_train_val)
+    gdf_train_val["y_proba"] = np.max(svc_best.predict_proba(X_train_val), axis=1)
 
     gdf_val["y_true"] = gdf_val["crop_class"]
     gdf_val["y_pred"] = svc_best.predict(X_val)
+    gdf_val["y_proba"] = np.max(svc_best.predict_proba(X_val), axis=1)
 
     gdf_test["y_true"] = gdf_test["crop_class"]
     gdf_test["y_pred"] = svc_best.predict(X_test)
+    gdf_test["y_proba"] = np.max(svc_best.predict_proba(X_test), axis=1)
 
     mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, run_name=run_name)
 
@@ -474,7 +478,7 @@ def train_rf(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name, n_trials=30)
 
     def objective(trial):
         params = {
-            "n_estimators": trial.suggest_int("n_estimators", 80, 250),
+            "n_estimators": trial.suggest_int("n_estimators", 80, 350),
             "max_depth": trial.suggest_categorical(
                 "max_depth",
                 [None, 5, 10],
@@ -526,15 +530,19 @@ def train_rf(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name, n_trials=30)
 
     gdf_train["y_true"] = gdf_train["crop_class"]
     gdf_train["y_pred"] = rf_best.predict(X_train)
+    gdf_train["y_proba"] = np.max(rf_best.predict_proba(X_train), axis=1)
 
     gdf_train_val["y_true"] = gdf_train_val["crop_class"]
     gdf_train_val["y_pred"] = rf_best.predict(X_train_val)
+    gdf_train_val["y_proba"] = np.max(rf_best.predict_proba(X_train_val), axis=1)
 
     gdf_val["y_true"] = gdf_val["crop_class"]
     gdf_val["y_pred"] = rf_best.predict(X_val)
+    gdf_val["y_proba"] = np.max(rf_best.predict_proba(X_val), axis=1)
 
     gdf_test["y_true"] = gdf_test["crop_class"]
     gdf_test["y_pred"] = rf_best.predict(X_test)
+    gdf_test["y_proba"] = np.max(rf_best.predict_proba(X_test), axis=1)
 
     mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, run_name=run_name)
 
