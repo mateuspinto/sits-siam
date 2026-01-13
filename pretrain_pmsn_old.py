@@ -1,23 +1,30 @@
 import math
 import argparse
+import copy
+import warnings
 
 import geopandas as gpd
 import lightning.pytorch as pl
+import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
+from lightly.loss import PMSNLoss
+from lightly.models.modules.heads import MSNProjectionHead
+from lightly.models.utils import deactivate_requires_grad, update_momentum
+from lightly.utils.scheduler import cosine_schedule
+from lightly.utils.debug import std_of_l2_normalized
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import MLFlowLogger
 from sklearnex import patch_sklearn
 from torch.optim.lr_scheduler import LambdaLR
-from torch.utils.data import WeightedRandomSampler
 
 from sits_siam.augment import (
-    AddCorruptedSample,
     AddMissingMask,
     IncreaseSequenceLength,
     LimitSequenceLength,
     Normalize,
     Pipeline,
+    RandomAddNoise,
     RandomTempRemoval,
     RandomTempShift,
     RandomTempSwapping,
@@ -25,43 +32,50 @@ from sits_siam.augment import (
 )
 from sits_siam.auxiliar import (
     KNNCallback,
+    beautify_prints,
     setup_seed,
-    save_pytorch_model,
-    split_with_percent_and_class_coverage,
-    ReconstructionCallback,
-    TSNECallback,
     check_if_already_ran,
+    TSNECallback,
+    split_with_percent_and_class_coverage,
+    save_pytorch_model
 )
 from sits_siam.models import (
     SITSBert,
-    SITS_LSTM,
     SITSBertPlusPlus,
+    SITS_LSTM,
     SITSConvNext,
     SITSMamba,
 )
-from sits_siam.utils import SitsFinetuneDatasetFromNpz, AgriGEELiteDataset
+from sits_siam.utils import SitsFinetuneDatasetFromNpz, SitsPretrainDatasetFromNpz, AgriGEELiteDataset
+
 
 patch_sklearn()
 setup_seed()
-
+beautify_prints()
 torch.set_float32_matmul_precision("high")
 
+# Suprime warnings do lightly sobre torch.tensor
+warnings.filterwarnings("ignore", message="To copy construct from a tensor")
+
 BATCH_SIZE = 2 * 512
-MAX_EPOCHS = 400
+MAX_EPOCHS = 100
 NUM_WARMUP_EPOCHS = 20
 BASE_LR = 1e-4
+NUM_VIEWS = 2
+MASK_RATIO = 0.15
+NUM_PROTOTYPES = 1024
 
 BATCHED_ARGS_PARSER = argparse.ArgumentParser(add_help=False)
 BATCHED_ARGS_PARSER.add_argument(
     "--model_name",
     type=str,
     choices=["MAMBA", "BERT", "BERTPP", "LSTM", "CNN"],
-    default="MAMBA",
+    default="BERT",
 )
 BATCHED_ARGS_PARSER.add_argument(
     "--dataset",
     type=str,
-    choices=["brazil", "california", "texas", "pastis"],
+    choices=["brazil", "california", "texas"],
     default="brazil",
 )
 BATCHED_ARGS_PARSER.add_argument(
@@ -80,37 +94,53 @@ TAGS = {
     "max_epochs": MAX_EPOCHS,
     "num_warmup_epochs": NUM_WARMUP_EPOCHS,
     "base_lr": BASE_LR,
+    "num_views": NUM_VIEWS,
     "model_name": MODEL_NAME,
+    "mask_ratio": MASK_RATIO,
+    "num_prototypes": NUM_PROTOTYPES,
 }
-RUN_NAME = "-".join(str(value) for value in TAGS.values())
+
 EXPERIMENT_NAME = f"{DATASET}-pretrain"
-RUN_NAME = f"{MODEL_NAME}-reconstruct"
+RUN_NAME = f"{MODEL_NAME}-PMSN-old"
 
-if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
-    print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
-    exit()
+# if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
+#     print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
+#     exit()
 
-aug_transforms = Pipeline(
+
+class PMSNMultiViewTransform(object):
+    def __init__(
+        self,
+        n_views: int = 2,
+    ):
+        self.n_views = n_views
+        self.transform = Pipeline(
+            [
+                LimitSequenceLength(140),
+                IncreaseSequenceLength(140),
+                RandomTempShift(),
+                RandomAddNoise(),
+                RandomTempRemoval(),
+                RandomTempSwapping(max_distance=3),
+                AddMissingMask(),
+                Normalize(),
+                ToPytorchTensor(),
+            ]
+        )
+
+    def __call__(self, sample: np.ndarray):
+        return [
+            self.transform({k: v.copy() for k, v in sample.items()})
+            for _ in range(self.n_views)
+        ]
+
+
+knn_transform = Pipeline(
     [
-        LimitSequenceLength(127),
-        IncreaseSequenceLength(127),
-        RandomTempSwapping(max_distance=3),
-        RandomTempShift(),
-        RandomTempRemoval(),
+        LimitSequenceLength(140),
+        IncreaseSequenceLength(140),
         AddMissingMask(),
         Normalize(),
-        AddCorruptedSample(),
-        ToPytorchTensor(),
-    ]
-)
-
-val_transforms = Pipeline(
-    [
-        LimitSequenceLength(127),
-        IncreaseSequenceLength(127),
-        AddMissingMask(),
-        Normalize(),
-        AddCorruptedSample(),
         ToPytorchTensor(),
     ]
 )
@@ -118,20 +148,20 @@ val_transforms = Pipeline(
 if DATASET in {"california", "texas"}:
     train_dataset = SitsFinetuneDatasetFromNpz(
         f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/test.npz",
-        transform=aug_transforms,
+        transform=PMSNMultiViewTransform(n_views=NUM_VIEWS),
     )
     val_dataset = SitsFinetuneDatasetFromNpz(
         f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/val.npz",
-        transform=val_transforms,
+        transform=PMSNMultiViewTransform(n_views=NUM_VIEWS),
     )
 
     knn_train_dataset = SitsFinetuneDatasetFromNpz(
         f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/train.npz",
-        transform=val_transforms,
+        transform=knn_transform,
     )
     knn_val_dataset = SitsFinetuneDatasetFromNpz(
         f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/val.npz",
-        transform=val_transforms,
+        transform=knn_transform,
     )
 elif DATASET == "brazil":
     gdf = gpd.read_parquet("/home/m/Downloads/gdf.parquet")
@@ -148,30 +178,30 @@ elif DATASET == "brazil":
     )
 
     train_dataset = AgriGEELiteDataset(
-        gdf_test,  # Test set used for training in pretraining
+        gdf_test,
         "/home/m/Downloads/df_sits.parquet",
-        transform=aug_transforms,
+        transform=PMSNMultiViewTransform(n_views=NUM_VIEWS),
         timestamp_processing="days_after_start",
     )
 
     val_dataset = AgriGEELiteDataset(
         gdf_val,
         "/home/m/Downloads/df_sits.parquet",
-        transform=val_transforms,
+        transform=PMSNMultiViewTransform(n_views=NUM_VIEWS),
         timestamp_processing="days_after_start",
     )
 
     knn_train_dataset = AgriGEELiteDataset(
         gdf_val,
         "/home/m/Downloads/df_sits.parquet",
-        transform=val_transforms,
+        transform=knn_transform,
         timestamp_processing="days_after_start",
     )
 
     knn_val_dataset = AgriGEELiteDataset(
         gdf_train,
         "/home/m/Downloads/df_sits.parquet",
-        transform=val_transforms,
+        transform=knn_transform,
         timestamp_processing="days_after_start",
     )
 else:
@@ -186,6 +216,8 @@ class TransformerClassifier(pl.LightningModule):
         batch_size: int,
         num_warmup_epochs: int,
         base_lr: float,
+        mask_ratio: float = 0.15,
+        num_prototypes: int = 1024,
     ):
         super(TransformerClassifier, self).__init__()
         BACKBONES = {
@@ -196,13 +228,23 @@ class TransformerClassifier(pl.LightningModule):
             "MAMBA": SITSMamba,
         }
         self.backbone = BACKBONES[MODEL_NAME](num_classes=1)
-        self.criterion = nn.MSELoss(reduction="none")
+        self.projection_head = MSNProjectionHead(input_dim=256, output_dim=256, hidden_dim=512)
+
+        self.anchor_backbone = copy.deepcopy(self.backbone)
+        self.anchor_projection_head = copy.deepcopy(self.projection_head)
+
+        deactivate_requires_grad(self.backbone)
+        deactivate_requires_grad(self.projection_head)
+
+        self.prototypes = nn.Linear(256, num_prototypes, bias=False).weight
+        self.criterion = PMSNLoss()
 
         self.max_epochs = max_epochs
         self.batch_size = batch_size
         self.train_dataset_size = train_dataset_size
         self.num_warmup_epochs = num_warmup_epochs
         self.base_lr = base_lr
+        self.mask_ratio = mask_ratio
 
     def forward(self, batch):
         x = batch["x"]
@@ -210,24 +252,53 @@ class TransformerClassifier(pl.LightningModule):
         mask = batch["mask"]
 
         pooled, _, _ = self.backbone(x, doy, mask)
-
         return pooled
 
-    def forward_corrupted(self, batch):
-        x = batch["corrupted_x"]
+    def encode_masked(self, batch):
+        """Codifica com mascaramento aleatório para anchors"""
+        x = batch["x"]
         doy = batch["doy"]
         mask = batch["mask"]
+        
+        # Aqui você pode implementar mascaramento temporal se desejar
+        # Por simplicidade, vamos apenas aplicar o backbone
+        pooled, _, _ = self.anchor_backbone(x, doy, mask)
+        projection = self.anchor_projection_head(pooled)
+        return projection
 
-        _, _, reconstructed = self.backbone(x, doy, mask)
-        return reconstructed
+    def encode_target(self, batch):
+        """Codifica sem mascaramento para targets"""
+        x = batch["x"]
+        doy = batch["doy"]
+        mask = batch["mask"]
+        
+        pooled, _, _ = self.backbone(x, doy, mask)
+        projection = self.projection_head(pooled)
+        return projection
 
     def training_step(self, batch, batch_idx):
-        pred = self.forward_corrupted(batch)
+        # Atualiza os pesos do encoder de momentum
+        momentum = cosine_schedule(self.current_epoch, self.max_epochs, 0.996, 1)
+        update_momentum(self.anchor_backbone, self.backbone, m=momentum)
+        update_momentum(self.anchor_projection_head, self.projection_head, m=momentum)
 
-        loss = self.criterion(pred, batch["x"].float())
-        mask = batch["corrupted_mask"].unsqueeze(-1)
-        loss = (loss * mask.float()).sum() / mask.sum()
+        # O dataloader retorna uma lista com duas views [target, anchor]
+        target_batch, anchor_batch = batch
+
+        # Gera targets e anchors
+        targets_out = self.encode_target(target_batch)
+        anchors_out = self.encode_masked(anchor_batch)
+
+        # Calcula a perda PMSN
+        loss = self.criterion(anchors_out, targets_out, self.prototypes.data)
+
         self.log("train_loss", loss, prog_bar=True)
+        self.log(
+            "train_collapse",
+            std_of_l2_normalized(anchors_out.detach()),
+            sync_dist=True,
+            prog_bar=True,
+        )
         return loss
 
     def on_train_epoch_end(self):
@@ -235,23 +306,45 @@ class TransformerClassifier(pl.LightningModule):
         self.log("learning_rate", lr, prog_bar=True, on_epoch=True, sync_dist=True)
 
     def validation_step(self, batch, batch_idx):
-        pred = self.forward_corrupted(batch)
-        loss = self.criterion(pred, batch["x"].float())
-        mask = batch["corrupted_mask"].unsqueeze(-1)
-        loss = (loss * mask.float()).sum() / mask.sum()
+        # O dataloader de validação também retorna duas views
+        target_batch, anchor_batch = batch
+
+        # Gera targets e anchors
+        targets_out = self.encode_target(target_batch)
+        anchors_out = self.encode_masked(anchor_batch)
+
+        # Calcula a perda de validação
+        loss = self.criterion(anchors_out, targets_out, self.prototypes.data)
+
         self.log("val_loss", loss, prog_bar=True, sync_dist=True)
+        self.log(
+            "val_collapse",
+            std_of_l2_normalized(anchors_out.detach()),
+            sync_dist=True,
+            prog_bar=True,
+        )
         return loss
 
     def test_step(self, batch, batch_idx):
-        pred = self.forward_corrupted(batch)
-        loss = self.criterion(pred, batch["x"].float())
-        mask = batch["corrupted_mask"].unsqueeze(-1)
-        loss = (loss * mask.float()).sum() / mask.sum()
-        self.log("test_loss", loss, prog_bar=True, sync_dist=True)
+        target_batch, anchor_batch = batch
+
+        targets_out = self.encode_target(target_batch)
+        anchors_out = self.encode_masked(anchor_batch)
+
+        loss = self.criterion(anchors_out, targets_out, self.prototypes.data)
+
+        self.log("test_loss", loss, sync_dist=True)
+        self.log("test_collapse", std_of_l2_normalized(anchors_out.detach()), prog_bar=True)
         return loss
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.base_lr)
+        # Otimiza apenas o anchor backbone, anchor projection head e prototypes
+        params = [
+            *list(self.anchor_backbone.parameters()),
+            *list(self.anchor_projection_head.parameters()),
+            self.prototypes,
+        ]
+        optimizer = torch.optim.AdamW(params, lr=self.base_lr)
         steps_per_epoch = math.ceil(self.train_dataset_size / self.batch_size)
         total_steps = steps_per_epoch * self.max_epochs
         num_warmup_steps = steps_per_epoch * self.num_warmup_epochs
@@ -283,19 +376,8 @@ class TransformerClassifier(pl.LightningModule):
         ]
 
 
-sample_weights = train_dataset.get_weights_for_WeightedRandomSampler()
-
-sampler = WeightedRandomSampler(
-    weights=sample_weights, num_samples=len(sample_weights), replacement=True
-)
-
 train_dataloader = torch.utils.data.DataLoader(
-    train_dataset,
-    batch_size=BATCH_SIZE,
-    sampler=sampler,
-    shuffle=False,
-    num_workers=4,
-    pin_memory=True,
+    train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True
 )
 val_dataloader = torch.utils.data.DataLoader(
     val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True
@@ -317,12 +399,23 @@ knn_val_dataloader = torch.utils.data.DataLoader(
 )
 
 
-mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, run_name=RUN_NAME)
-
-reconstruction_callback = ReconstructionCallback(
-    val_dataset=val_dataset,
-    mlflow_logger=mlflow_logger,
+checkpoint_callback = ModelCheckpoint(
+    monitor="knn_f1_weighted", filename="best_model", save_top_k=1, mode="max"
 )
+knn_callback = KNNCallback(
+    train_dataloader=knn_train_dataloader,
+    val_dataloader=knn_val_dataloader,
+    every_n_epochs=2,
+    num_classes=knn_train_dataset.num_classes,
+    k=3,
+)
+early_stopping_callback = EarlyStopping(
+    monitor="knn_f1_weighted",
+    patience=10,
+    mode="max",
+)
+
+mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, run_name=RUN_NAME)
 
 tsne_callback = TSNECallback(
     train_dataset=knn_val_dataset,
@@ -331,48 +424,36 @@ tsne_callback = TSNECallback(
     every_n_epochs=30
 )
 
-knn_callback = KNNCallback(
-    train_dataloader=knn_train_dataloader,
-    val_dataloader=knn_val_dataloader,
-    every_n_epochs=2,
-    num_classes=knn_train_dataset.num_classes,
-    k=3,
-)
-checkpoint_callback = ModelCheckpoint(
-    monitor="knn_f1_weighted", filename="best_model", save_top_k=1, mode="max"
-)
-early_stopping_callback = EarlyStopping(
-    monitor="knn_f1_weighted",
-    patience=40,
-    mode="max",
-)
-
 trainer = pl.Trainer(
     max_epochs=MAX_EPOCHS,
     min_epochs=2 * NUM_WARMUP_EPOCHS,
-    callbacks=[reconstruction_callback, tsne_callback, knn_callback, checkpoint_callback, early_stopping_callback],
+    callbacks=[tsne_callback, checkpoint_callback, knn_callback, early_stopping_callback],
     accelerator="gpu",
     devices=[GPU_ID],
     precision="bf16-mixed",
     logger=mlflow_logger,
 )
+
 model = TransformerClassifier(
     max_epochs=MAX_EPOCHS,
     batch_size=BATCH_SIZE,
     train_dataset_size=len(train_dataset),
     num_warmup_epochs=NUM_WARMUP_EPOCHS,
     base_lr=BASE_LR,
+    mask_ratio=MASK_RATIO,
+    num_prototypes=NUM_PROTOTYPES,
 )
 
 trainer.validate(model=model, dataloaders=val_dataloader)
 trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
-model = TransformerClassifier.load_from_checkpoint(
-    checkpoint_callback.best_model_path,
+model = TransformerClassifier.load_from_checkpoint(checkpoint_callback.best_model_path,
     max_epochs=MAX_EPOCHS,
     batch_size=BATCH_SIZE,
     train_dataset_size=len(train_dataset),
     num_warmup_epochs=NUM_WARMUP_EPOCHS,
     base_lr=BASE_LR,
+    mask_ratio=MASK_RATIO,
+    num_prototypes=NUM_PROTOTYPES,
 )
 
 save_pytorch_model(model.backbone, mlflow_logger)

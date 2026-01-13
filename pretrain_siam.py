@@ -1,5 +1,7 @@
 import math
+import argparse
 
+import geopandas as gpd
 import lightning.pytorch as pl
 import numpy as np
 import torch
@@ -23,9 +25,23 @@ from sits_siam.augment import (
     RandomTempSwapping,
     ToPytorchTensor,
 )
-from sits_siam.auxiliar import KNNCallback, beautify_prints, setup_seed
-from sits_siam.models import SITSBert
-from sits_siam.utils import SitsFinetuneDatasetFromNpz, SitsPretrainDatasetFromNpz
+from sits_siam.auxiliar import (
+    KNNCallback,
+    beautify_prints,
+    setup_seed,
+    check_if_already_ran,
+    TSNECallback,
+    split_with_percent_and_class_coverage,
+    save_pytorch_model
+)
+from sits_siam.models import (
+    SITSBert,
+    SITSBertPlusPlus,
+    SITS_LSTM,
+    SITSConvNext,
+    SITSMamba,
+)
+from sits_siam.utils import SitsFinetuneDatasetFromNpz, SitsPretrainDatasetFromNpz, AgriGEELiteDataset
 
 
 patch_sklearn()
@@ -33,12 +49,34 @@ setup_seed()
 beautify_prints()
 torch.set_float32_matmul_precision("high")
 
-DATASET = "texas"
 BATCH_SIZE = 2 * 512
 MAX_EPOCHS = 100
 NUM_WARMUP_EPOCHS = 20
 BASE_LR = 1e-4
 NUM_VIEWS = 2
+
+BATCHED_ARGS_PARSER = argparse.ArgumentParser(add_help=False)
+BATCHED_ARGS_PARSER.add_argument(
+    "--model_name",
+    type=str,
+    choices=["MAMBA", "BERT", "BERTPP", "LSTM", "CNN"],
+    default="BERT",
+)
+BATCHED_ARGS_PARSER.add_argument(
+    "--dataset",
+    type=str,
+    choices=["brazil", "california", "texas"],
+    default="brazil",
+)
+BATCHED_ARGS_PARSER.add_argument(
+    "--gpu",
+    type=int,
+    default=0,
+)
+_parsed_args, _ = BATCHED_ARGS_PARSER.parse_known_args()
+MODEL_NAME = _parsed_args.model_name
+DATASET = _parsed_args.dataset
+GPU_ID = _parsed_args.gpu
 
 TAGS = {
     "dataset": DATASET,
@@ -47,8 +85,15 @@ TAGS = {
     "num_warmup_epochs": NUM_WARMUP_EPOCHS,
     "base_lr": BASE_LR,
     "num_views": NUM_VIEWS,
+    "model_name": MODEL_NAME,
 }
-RUN_NAME = "-".join(str(value) for value in TAGS.values())
+
+EXPERIMENT_NAME = f"{DATASET}-pretrain"
+RUN_NAME = f"{MODEL_NAME}-FastSiam"
+
+# if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
+#     print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
+#     exit()
 
 
 class FastSiamMultiViewTransform(object):
@@ -59,6 +104,7 @@ class FastSiamMultiViewTransform(object):
         self.n_views = n_views
         self.transform = Pipeline(
             [
+                LimitSequenceLength(140),
                 IncreaseSequenceLength(140),
                 RandomTempShift(),
                 RandomAddNoise(),
@@ -77,15 +123,6 @@ class FastSiamMultiViewTransform(object):
         ]
 
 
-train_dataset = SitsFinetuneDatasetFromNpz(
-    "/mnt/c/Users/m/Downloads/grsl/california_01_01_998/test.npz",
-    transform=FastSiamMultiViewTransform(n_views=NUM_VIEWS),
-)
-val_dataset = SitsFinetuneDatasetFromNpz(
-    "/mnt/c/Users/m/Downloads/grsl/california_01_01_998/val.npz",
-    transform=FastSiamMultiViewTransform(n_views=NUM_VIEWS),
-)
-
 knn_transform = Pipeline(
     [
         LimitSequenceLength(140),
@@ -96,14 +133,67 @@ knn_transform = Pipeline(
     ]
 )
 
-knn_train_dataset = SitsFinetuneDatasetFromNpz(
-    "/mnt/c/Users/m/Downloads/grsl/california_01_01_998/train.npz",
-    transform=knn_transform,
-)
-knn_val_dataset = SitsFinetuneDatasetFromNpz(
-    "/mnt/c/Users/m/Downloads/grsl/california_01_01_998/val.npz",
-    transform=knn_transform,
-)
+if DATASET in {"california", "texas"}:
+    train_dataset = SitsFinetuneDatasetFromNpz(
+        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/test.npz",
+        transform=FastSiamMultiViewTransform(n_views=NUM_VIEWS),
+    )
+    val_dataset = SitsFinetuneDatasetFromNpz(
+        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/val.npz",
+        transform=FastSiamMultiViewTransform(n_views=NUM_VIEWS),
+    )
+
+    knn_train_dataset = SitsFinetuneDatasetFromNpz(
+        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/train.npz",
+        transform=knn_transform,
+    )
+    knn_val_dataset = SitsFinetuneDatasetFromNpz(
+        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/val.npz",
+        transform=knn_transform,
+    )
+elif DATASET == "brazil":
+    gdf = gpd.read_parquet("/home/m/Downloads/gdf.parquet")
+
+    class_map = (
+        gdf[["crop_class", "crop_number"]]
+        .drop_duplicates()
+        .set_index("crop_number")["crop_class"]
+        .to_dict()
+    )
+
+    gdf_train, gdf_val, gdf_test = split_with_percent_and_class_coverage(
+        gdf, percent=1, max_attempts=500
+    )
+
+    train_dataset = AgriGEELiteDataset(
+        gdf_test,
+        "/home/m/Downloads/df_sits.parquet",
+        transform=FastSiamMultiViewTransform(n_views=NUM_VIEWS),
+        timestamp_processing="days_after_start",
+    )
+
+    val_dataset = AgriGEELiteDataset(
+        gdf_val,
+        "/home/m/Downloads/df_sits.parquet",
+        transform=FastSiamMultiViewTransform(n_views=NUM_VIEWS),
+        timestamp_processing="days_after_start",
+    )
+
+    knn_train_dataset = AgriGEELiteDataset(
+        gdf_val,
+        "/home/m/Downloads/df_sits.parquet",
+        transform=knn_transform,
+        timestamp_processing="days_after_start",
+    )
+
+    knn_val_dataset = AgriGEELiteDataset(
+        gdf_train,
+        "/home/m/Downloads/df_sits.parquet",
+        transform=knn_transform,
+        timestamp_processing="days_after_start",
+    )
+else:
+    raise ValueError(f"Dataset {DATASET} not recognized.")
 
 
 class TransformerClassifier(pl.LightningModule):
@@ -116,7 +206,14 @@ class TransformerClassifier(pl.LightningModule):
         base_lr: float,
     ):
         super(TransformerClassifier, self).__init__()
-        self.backbone = SITSBert(num_classes=1)
+        BACKBONES = {
+            "BERT": SITSBert,
+            "BERTPP": SITSBertPlusPlus,
+            "LSTM": SITS_LSTM,
+            "CNN": SITSConvNext,
+            "MAMBA": SITSMamba,
+        }
+        self.backbone = BACKBONES[MODEL_NAME](num_classes=1)
         self.projection_head = SimSiamProjectionHead(256, 512, 1024)
         self.prediction_head = SimSiamPredictionHead(1024, 512, 1024)
 
@@ -134,6 +231,14 @@ class TransformerClassifier(pl.LightningModule):
         mask = batch["mask"]
 
         pooled, _, _ = self.backbone(x, doy, mask)
+        return pooled
+
+    def forward_siam(self, batch):
+        x = batch["x"]
+        doy = batch["doy"]
+        mask = batch["mask"]
+
+        pooled, _, _ = self.backbone(x, doy, mask)
 
         z = self.projection_head(pooled)
         p = self.prediction_head(z)
@@ -143,7 +248,7 @@ class TransformerClassifier(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         views = batch
-        features = [self.forward(view) for view in views]
+        features = [self.forward_siam(view) for view in views]
         zs = torch.stack([z for z, _ in features])
         ps = torch.stack([p for _, p in features])
 
@@ -167,7 +272,7 @@ class TransformerClassifier(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         views = batch
-        features = [self.forward(view) for view in views]
+        features = [self.forward_siam(view) for view in views]
         zs = torch.stack([z for z, _ in features])
         ps = torch.stack([p for _, p in features])
 
@@ -257,26 +362,36 @@ knn_val_dataloader = torch.utils.data.DataLoader(
 
 
 checkpoint_callback = ModelCheckpoint(
-    monitor="knn_f1_macro", filename="best_model", save_top_k=1, mode="max"
+    monitor="knn_f1_weighted", filename="best_model", save_top_k=1, mode="max"
 )
 knn_callback = KNNCallback(
     train_dataloader=knn_train_dataloader,
     val_dataloader=knn_val_dataloader,
     every_n_epochs=2,
+    num_classes=knn_train_dataset.num_classes,
     k=3,
 )
 early_stopping_callback = EarlyStopping(
-    monitor="knn_f1_macro",
+    monitor="knn_f1_weighted",
     patience=10,
     mode="max",
 )
-mlflow_logger = MLFlowLogger(experiment_name="TEXASPRETRAIN")
+
+mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, run_name=RUN_NAME)
+
+tsne_callback = TSNECallback(
+    train_dataset=knn_val_dataset,
+    mlflow_logger=mlflow_logger,
+    num_samples=1000,
+    every_n_epochs=30
+)
 
 trainer = pl.Trainer(
     max_epochs=MAX_EPOCHS,
     min_epochs=2 * NUM_WARMUP_EPOCHS,
-    callbacks=[checkpoint_callback, knn_callback, early_stopping_callback],
+    callbacks=[tsne_callback, checkpoint_callback, knn_callback, early_stopping_callback],
     accelerator="gpu",
+    devices=[GPU_ID],
     precision="bf16-mixed",
     logger=mlflow_logger,
 )
@@ -291,8 +406,12 @@ model = TransformerClassifier(
 
 trainer.validate(model=model, dataloaders=val_dataloader)
 trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
-model = TransformerClassifier.load_from_checkpoint(checkpoint_callback.best_model_path)
+model = TransformerClassifier.load_from_checkpoint(checkpoint_callback.best_model_path,
+    max_epochs=MAX_EPOCHS,
+    batch_size=BATCH_SIZE,
+    train_dataset_size=len(train_dataset),
+    num_warmup_epochs=NUM_WARMUP_EPOCHS,
+    base_lr=BASE_LR
+)
 
-torch.save(model.backbone.state_dict(), "siam_texas_new_bert.pth")
-# Saving pytorch model backbone state dict
-# torch.save(model.backbone.state_dict(), "weights/fastsiam_texas.pth")
+save_pytorch_model(model.backbone, mlflow_logger)
