@@ -1,9 +1,7 @@
 import math
 import argparse
 
-import pandas as pd
 import geopandas as gpd
-from sklearn.model_selection import train_test_split
 import lightning.pytorch as pl
 import torch
 import torch.nn as nn
@@ -24,13 +22,14 @@ from sits_siam.augment import (
     RandomTempShift,
     RandomTempSwapping,
     ToPytorchTensor,
-    RandomChanRemoval,
 )
 from sits_siam.auxiliar import (
     KNNCallback,
     setup_seed,
     save_pytorch_model,
     split_with_percent_and_class_coverage,
+    ReconstructionCallback,
+    TSNECallback,
 )
 from sits_siam.models import (
     SITSBert,
@@ -43,10 +42,9 @@ from sits_siam.utils import SitsFinetuneDatasetFromNpz, AgriGEELiteDataset
 
 patch_sklearn()
 setup_seed()
-# beautify_prints()
+
 torch.set_float32_matmul_precision("high")
 
-DATASET = "brazil"
 BATCH_SIZE = 2 * 512
 MAX_EPOCHS = 400
 NUM_WARMUP_EPOCHS = 20
@@ -59,8 +57,15 @@ BATCHED_ARGS_PARSER.add_argument(
     choices=["MAMBA", "BERT", "BERTPP", "LSTM", "CNN"],
     default="MAMBA",
 )
+BATCHED_ARGS_PARSER.add_argument(
+    "--dataset",
+    type=str,
+    choices=["brazil", "california", "texas", "pastis"],
+    default="brazil",
+)
 _parsed_args, _ = BATCHED_ARGS_PARSER.parse_known_args()
 MODEL_NAME = _parsed_args.model_name
+DATASET = _parsed_args.dataset
 
 TAGS = {
     "dataset": DATASET,
@@ -71,7 +76,7 @@ TAGS = {
     "model_name": MODEL_NAME,
 }
 RUN_NAME = "-".join(str(value) for value in TAGS.values())
-EXPERIMENT_NAME = f"pretrain-{DATASET}"
+EXPERIMENT_NAME = f"{DATASET}-pretrain"
 RUN_NAME = f"{MODEL_NAME}-reconstruct"
 
 aug_transforms = Pipeline(
@@ -81,7 +86,6 @@ aug_transforms = Pipeline(
         RandomTempSwapping(max_distance=3),
         RandomTempShift(),
         RandomTempRemoval(),
-        # RandomChanRemoval(0.2),
         AddMissingMask(),
         Normalize(),
         AddCorruptedSample(),
@@ -304,6 +308,18 @@ knn_val_dataloader = torch.utils.data.DataLoader(
 
 mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, run_name=RUN_NAME)
 
+reconstruction_callback = ReconstructionCallback(
+    val_dataset=val_dataset,
+    mlflow_logger=mlflow_logger,
+)
+
+tsne_callback = TSNECallback(
+    train_dataset=knn_val_dataset,
+    mlflow_logger=mlflow_logger,
+    num_samples=1000,
+    every_n_epochs=30
+)
+
 knn_callback = KNNCallback(
     train_dataloader=knn_train_dataloader,
     val_dataloader=knn_val_dataloader,
@@ -323,7 +339,7 @@ early_stopping_callback = EarlyStopping(
 trainer = pl.Trainer(
     max_epochs=MAX_EPOCHS,
     min_epochs=2 * NUM_WARMUP_EPOCHS,
-    callbacks=[knn_callback, checkpoint_callback, early_stopping_callback],
+    callbacks=[reconstruction_callback, tsne_callback, knn_callback, checkpoint_callback, early_stopping_callback],
     accelerator="gpu",
     precision="bf16-mixed",
     logger=mlflow_logger,

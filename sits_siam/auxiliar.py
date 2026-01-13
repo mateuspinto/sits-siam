@@ -33,7 +33,7 @@ import optuna
 from imblearn.metrics import specificity_score
 from imblearn.metrics import geometric_mean_score
 import mlflow
-
+from sklearn.manifold import TSNE
 
 patch_sklearn()
 
@@ -710,3 +710,133 @@ def split_with_percent_and_class_coverage(
             f"após {max_attempts} tentativas variando a seed. Ajuste o percentual ({percent}%) ou verifique o dataset."
         )
     )
+
+class ReconstructionCallback(pl.Callback):
+    def __init__(self, val_dataset, mlflow_logger, num_samples=10, every_n_epochs=30):
+        super().__init__()
+        self.mlflow_logger = mlflow_logger
+        self.num_samples = num_samples
+        self.every_n_epochs = every_n_epochs
+
+        indices = torch.randperm(len(val_dataset))[:num_samples].tolist()
+        self.samples = [val_dataset[i] for i in indices]
+        
+    def _log_reconstructions(self, trainer, pl_module):
+        pl_module.eval()
+        
+        with torch.no_grad():
+            original_list = []
+            corrupted_list = []
+            reconstructed_list = []
+            corrupted_mask_list = []
+            doys = []
+            
+            for sample in self.samples:
+                batch = {
+                    key: value.unsqueeze(0).to(pl_module.device) 
+                    if isinstance(value, torch.Tensor) 
+                    else value
+                    for key, value in sample.items()
+                }
+                
+                reconstructed = pl_module.forward_corrupted(batch)
+                
+                original_list.append(batch["x"].cpu().numpy())
+                corrupted_list.append(batch["corrupted_x"].cpu().numpy())
+                reconstructed_list.append(reconstructed.cpu().numpy())
+                corrupted_mask_list.append(batch["corrupted_mask"].cpu().numpy())
+                doys.append(batch["doy"].cpu().numpy())
+            
+            original = np.concatenate(original_list, axis=0)
+            corrupted = np.concatenate(corrupted_list, axis=0)
+            reconstructed = np.concatenate(reconstructed_list, axis=0)
+            corrupted_mask = np.concatenate(corrupted_mask_list, axis=0)
+            doys = np.concatenate(doys, axis=0)
+            
+            epoch = trainer.current_epoch
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                file_path = os.path.join(tmpdir, f"reconstruction_epoch_{epoch}.npz")
+                np.savez(
+                    file_path,
+                    original=original,
+                    corrupted=corrupted,
+                    reconstructed=reconstructed,
+                    corrupted_mask=corrupted_mask,
+                    doys=doys,
+                    epoch=epoch
+                )
+                self.mlflow_logger.experiment.log_artifact(self.mlflow_logger.run_id, file_path)
+
+        pl_module.train()
+    
+    def on_validation_epoch_end(self, trainer, pl_module):
+        epoch = trainer.current_epoch
+
+        if epoch <= 10:
+            self._log_reconstructions(trainer, pl_module)
+        elif epoch % self.every_n_epochs == 0:
+            self._log_reconstructions(trainer, pl_module)
+
+
+class TSNECallback(pl.Callback):
+
+    def __init__(self, train_dataset, mlflow_logger, num_samples=1000, every_n_epochs=30, random_state=42):
+        super().__init__()
+        self.num_samples = num_samples
+        self.every_n_epochs = every_n_epochs
+        self.random_state = random_state
+        
+        indices = torch.randperm(len(train_dataset))[:num_samples].tolist()
+        self.samples = [train_dataset[i] for i in indices]
+        self.labels = [train_dataset[i].get('y', -1) for i in indices]
+        self.mlflow_logger = mlflow_logger
+        
+    def _log_tsne(self, trainer, pl_module):
+        pl_module.eval()
+        
+        with torch.no_grad():
+            embeddings_list = []
+            labels_list = []
+            
+            for sample, label in zip(self.samples, self.labels):
+                batch = {
+                    key: value.unsqueeze(0).to(pl_module.device) 
+                    if isinstance(value, torch.Tensor) 
+                    else value
+                    for key, value in sample.items()
+                }
+                
+                embedding = pl_module.forward(batch)
+                
+                embeddings_list.append(embedding.cpu().numpy())
+                labels_list.append(label)
+            
+            embeddings = np.concatenate(embeddings_list, axis=0)
+            labels = np.array(labels_list)
+            
+            tsne = TSNE(n_components=2, random_state=self.random_state, perplexity=min(30, len(embeddings) - 1))
+            tsne_coords = tsne.fit_transform(embeddings)
+            
+            df = pd.DataFrame({
+                'tsne_x': tsne_coords[:, 0],
+                'tsne_y': tsne_coords[:, 1],
+                'y_true': labels,
+                'epoch': trainer.current_epoch
+            })
+            
+            epoch = trainer.current_epoch
+            with tempfile.TemporaryDirectory() as tmpdir:
+                file_path = os.path.join(tmpdir, f"tsne_epoch_{epoch}.parquet")
+                df.to_parquet(file_path, index=False)
+                self.mlflow_logger.experiment.log_artifact(self.mlflow_logger.run_id, file_path)
+        
+        pl_module.train()
+    
+    def on_validation_epoch_end(self, trainer, pl_module):
+        epoch = trainer.current_epoch
+        
+        if epoch <= 10:
+            self._log_tsne(trainer, pl_module)
+        elif epoch % self.every_n_epochs == 0:
+            self._log_tsne(trainer, pl_module)
