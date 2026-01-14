@@ -214,7 +214,7 @@ class TransformerClassifier(pl.LightningModule):
             "MAMBA": SITSMamba,
         }
         self.backbone = BACKBONES[MODEL_NAME](num_classes=1)
-        self.projection_head = SimSiamProjectionHead(256, 512, 1024)
+        self.projection_head = SimSiamProjectionHead(self.backbone.hidden_dim, 512, 1024)
         self.prediction_head = SimSiamPredictionHead(1024, 512, 1024)
 
         self.criterion = NegativeCosineSimilarity()

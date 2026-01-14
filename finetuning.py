@@ -216,6 +216,9 @@ elif DATASET in {"texas", "california"}:
         f"data/{DATASET}_{split_string}/test.npz",
         transform=transforms,
     )
+
+    class_names = train_dataset.get_class_names()
+    class_map = {i: class_names[i] for i in range(len(class_names))}
 else:
     raise ValueError(f"Dataset {DATASET} not recognized.")
 
@@ -337,7 +340,7 @@ class Phase2_ConfidNet(pl.LightningModule):
             param.requires_grad = False
 
         self.confid_net = nn.Sequential(
-            nn.Linear(256, 400),
+            nn.Linear(self.backbone.hidden_dim, 400),
             nn.ReLU(),
             nn.Linear(400, 400),
             nn.ReLU(),

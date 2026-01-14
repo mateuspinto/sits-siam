@@ -36,6 +36,7 @@ class SITSBertPlusPlus(nn.Module):
     ):
         super().__init__()
 
+        self.hidden_dim = hidden
         self.embed_dim = hidden // 2
         self.input_proj = nn.Linear(num_features, self.embed_dim)
         self.pos_encoder = PositionalEncoding(self.embed_dim, max_len)
@@ -123,6 +124,7 @@ class SITSBert(nn.Module):
         max_len=366,
     ):
         super().__init__()
+        self.hidden_dim = hidden
         self.embed_dim = hidden // 2
         self.input_proj = nn.Linear(num_features, self.embed_dim)
         self.pos_encoder = PositionalEncoding(self.embed_dim, max_len)
@@ -187,6 +189,7 @@ class SITS_MLP_Backbone(nn.Module):
     ):
         super().__init__()
 
+        self.hidden_dim = hidden_dim
         input_dim = input_channels * time_steps
 
         self.flatten = nn.Flatten()
@@ -238,6 +241,7 @@ class SITS_LSTM(nn.Module):
     ):
         super().__init__()
 
+        self.hidden_dim = hidden
         self.embed_dim = hidden // 2
         self.input_proj = nn.Linear(num_features, self.embed_dim)
 
@@ -370,6 +374,7 @@ class SITSConvNext(nn.Module):
     ):
         super().__init__()
 
+        self.hidden_dim = hidden
         self.embed_dim = hidden // 2
         self.input_proj = nn.Linear(num_features, self.embed_dim)
 
@@ -502,6 +507,7 @@ class SITSMamba(nn.Module):
         max_len=366,
     ):
         super().__init__()
+        self.hidden_dim = hidden
         self.embed_dim = hidden // 2
         self.input_proj = nn.Linear(num_features, self.embed_dim)
 

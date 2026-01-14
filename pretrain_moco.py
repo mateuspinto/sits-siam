@@ -217,7 +217,7 @@ class TransformerClassifier(pl.LightningModule):
             "MAMBA": SITSMamba,
         }
         self.backbone = BACKBONES[MODEL_NAME](num_classes=1)
-        self.projection_head = MoCoProjectionHead(input_dim=256, hidden_dim=512, output_dim=128)
+        self.projection_head = MoCoProjectionHead(input_dim=self.backbone.hidden_dim, hidden_dim=512, output_dim=128)
 
         # Momentum Encoder (cópia do encoder principal)
         self.backbone_momentum = copy.deepcopy(self.backbone)

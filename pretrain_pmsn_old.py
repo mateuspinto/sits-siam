@@ -228,7 +228,7 @@ class TransformerClassifier(pl.LightningModule):
             "MAMBA": SITSMamba,
         }
         self.backbone = BACKBONES[MODEL_NAME](num_classes=1)
-        self.projection_head = MSNProjectionHead(input_dim=256, output_dim=256, hidden_dim=512)
+        self.projection_head = MSNProjectionHead(input_dim=self.backbone.hidden_dim, output_dim=256, hidden_dim=512)
 
         self.anchor_backbone = copy.deepcopy(self.backbone)
         self.anchor_projection_head = copy.deepcopy(self.projection_head)
