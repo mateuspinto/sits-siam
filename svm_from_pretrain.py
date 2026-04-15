@@ -110,7 +110,7 @@ TAGS = {
     "n_jobs": N_JOBS,
 }
 EXPERIMENT_NAME = f"{DATASET}-finetuning"
-RUN_NAME_SUFFIX = f"SVM{MODEL_NAME}-{TRAIN_PERCENT}-"
+RUN_NAME_SUFFIX = f"SVM{MODEL_NAME}-{TRAIN_PERCENT}-{PRETRAIN}"
 
 if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME_SUFFIX):
     print(f"{RUN_NAME_SUFFIX} already ran in {EXPERIMENT_NAME}. Exiting.")

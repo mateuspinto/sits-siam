@@ -52,8 +52,8 @@ setup_seed()
 beautify_prints()
 torch.set_float32_matmul_precision("high")
 
-BATCH_SIZE = 2 * 512
-MAX_EPOCHS = 100
+BATCH_SIZE = 8 * 512
+MAX_EPOCHS = 400
 NUM_WARMUP_EPOCHS = 20
 BASE_LR = 1e-4
 NUM_VIEWS = 2
@@ -94,9 +94,9 @@ TAGS = {
 EXPERIMENT_NAME = f"{DATASET}-pretrain"
 RUN_NAME = f"{MODEL_NAME}-MoCo"
 
-# if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
-#     print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
-#     exit()
+if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
+    print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
+    exit()
 
 
 class MoCoMultiViewTransform(object):
@@ -138,24 +138,24 @@ knn_transform = Pipeline(
 
 if DATASET in {"california", "texas"}:
     train_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/test.npz",
+        f"data/{DATASET}_001_001_998/test.npz",
         transform=MoCoMultiViewTransform(n_views=NUM_VIEWS),
     )
     val_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/val.npz",
+        f"data/{DATASET}_001_001_998/val.npz",
         transform=MoCoMultiViewTransform(n_views=NUM_VIEWS),
     )
 
     knn_train_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/train.npz",
+        f"data/{DATASET}_001_001_998/train.npz",
         transform=knn_transform,
     )
     knn_val_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/val.npz",
+        f"data/{DATASET}_001_001_998/val.npz",
         transform=knn_transform,
     )
 elif DATASET == "brazil":
-    gdf = gpd.read_parquet("/home/m/Downloads/gdf.parquet")
+    gdf = gpd.read_parquet("data/agl/gdf.parquet")
 
     class_map = (
         gdf[["crop_class", "crop_number"]]
@@ -170,28 +170,28 @@ elif DATASET == "brazil":
 
     train_dataset = AgriGEELiteDataset(
         gdf_test,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=MoCoMultiViewTransform(n_views=NUM_VIEWS),
         timestamp_processing="days_after_start",
     )
 
     val_dataset = AgriGEELiteDataset(
         gdf_val,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=MoCoMultiViewTransform(n_views=NUM_VIEWS),
         timestamp_processing="days_after_start",
     )
 
     knn_train_dataset = AgriGEELiteDataset(
         gdf_val,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=knn_transform,
         timestamp_processing="days_after_start",
     )
 
     knn_val_dataset = AgriGEELiteDataset(
         gdf_train,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=knn_transform,
         timestamp_processing="days_after_start",
     )
@@ -375,7 +375,7 @@ knn_val_dataloader = torch.utils.data.DataLoader(
 
 
 checkpoint_callback = ModelCheckpoint(
-    monitor="knn_f1_weighted", filename="best_model", save_top_k=1, mode="max"
+    monitor="val_loss", filename="best_model", save_top_k=1, mode="min"
 )
 knn_callback = KNNCallback(
     train_dataloader=knn_train_dataloader,
@@ -385,9 +385,9 @@ knn_callback = KNNCallback(
     k=3,
 )
 early_stopping_callback = EarlyStopping(
-    monitor="knn_f1_weighted",
-    patience=10,
-    mode="max",
+    monitor="val_loss",
+    patience=20,
+    mode="min",
 )
 
 mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, run_name=RUN_NAME)

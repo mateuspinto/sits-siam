@@ -44,7 +44,7 @@ BATCHED_ARGS_PARSER = argparse.ArgumentParser(add_help=False)
 BATCHED_ARGS_PARSER.add_argument(
     "--train_percent",
     type=float,
-    default=70.0,
+    default=1.0,
 )
 BATCHED_ARGS_PARSER.add_argument(
     "--dataset",

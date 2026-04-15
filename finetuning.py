@@ -75,7 +75,7 @@ BATCHED_ARGS_PARSER.add_argument(
 BATCHED_ARGS_PARSER.add_argument(
     "--pretrain",
     type=str,
-    choices=["off", "reconstruct"],
+    choices=["off", "reconstruct", "MoCo", "PMSN", "FastSiam"],
     default="off",
 )
 BATCHED_ARGS_PARSER.add_argument(

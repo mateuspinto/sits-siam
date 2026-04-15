@@ -46,7 +46,7 @@ setup_seed()
 
 torch.set_float32_matmul_precision("high")
 
-BATCH_SIZE = 2 * 512
+BATCH_SIZE = 8 * 512
 MAX_EPOCHS = 400
 NUM_WARMUP_EPOCHS = 20
 BASE_LR = 1e-4
@@ -117,24 +117,24 @@ val_transforms = Pipeline(
 
 if DATASET in {"california", "texas"}:
     train_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/test.npz",
+        f"data/{DATASET}_001_001_998/test.npz",
         transform=aug_transforms,
     )
     val_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/val.npz",
+        f"data/{DATASET}_001_001_998/val.npz",
         transform=val_transforms,
     )
 
     knn_train_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/train.npz",
+        f"data/{DATASET}_001_001_998/train.npz",
         transform=val_transforms,
     )
     knn_val_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/val.npz",
+        f"data/{DATASET}_001_001_998/val.npz",
         transform=val_transforms,
     )
 elif DATASET == "brazil":
-    gdf = gpd.read_parquet("/home/m/Downloads/gdf.parquet")
+    gdf = gpd.read_parquet("data/agl/gdf.parquet")
 
     class_map = (
         gdf[["crop_class", "crop_number"]]
@@ -149,28 +149,28 @@ elif DATASET == "brazil":
 
     train_dataset = AgriGEELiteDataset(
         gdf_test,  # Test set used for training in pretraining
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=aug_transforms,
         timestamp_processing="days_after_start",
     )
 
     val_dataset = AgriGEELiteDataset(
         gdf_val,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=val_transforms,
         timestamp_processing="days_after_start",
     )
 
     knn_train_dataset = AgriGEELiteDataset(
         gdf_val,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=val_transforms,
         timestamp_processing="days_after_start",
     )
 
     knn_val_dataset = AgriGEELiteDataset(
         gdf_train,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=val_transforms,
         timestamp_processing="days_after_start",
     )
@@ -339,12 +339,12 @@ knn_callback = KNNCallback(
     k=3,
 )
 checkpoint_callback = ModelCheckpoint(
-    monitor="knn_f1_weighted", filename="best_model", save_top_k=1, mode="max"
+    monitor="val_loss", filename="best_model", save_top_k=1, mode="min"
 )
 early_stopping_callback = EarlyStopping(
-    monitor="knn_f1_weighted",
-    patience=40,
-    mode="max",
+    monitor="val_loss",
+    patience=20,
+    mode="min",
 )
 
 trainer = pl.Trainer(

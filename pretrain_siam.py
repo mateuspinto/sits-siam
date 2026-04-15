@@ -46,14 +46,14 @@ from sits_siam.utils import SitsFinetuneDatasetFromNpz, SitsPretrainDatasetFromN
 
 patch_sklearn()
 setup_seed()
-beautify_prints()
+# beautify_prints()
 torch.set_float32_matmul_precision("high")
 
 BATCH_SIZE = 2 * 512
-MAX_EPOCHS = 100
+MAX_EPOCHS = 400
 NUM_WARMUP_EPOCHS = 20
 BASE_LR = 1e-4
-NUM_VIEWS = 2
+NUM_VIEWS = 4
 
 BATCHED_ARGS_PARSER = argparse.ArgumentParser(add_help=False)
 BATCHED_ARGS_PARSER.add_argument(
@@ -91,9 +91,9 @@ TAGS = {
 EXPERIMENT_NAME = f"{DATASET}-pretrain"
 RUN_NAME = f"{MODEL_NAME}-FastSiam"
 
-# if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
-#     print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
-#     exit()
+if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
+    print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
+    exit()
 
 
 class FastSiamMultiViewTransform(object):
@@ -135,24 +135,24 @@ knn_transform = Pipeline(
 
 if DATASET in {"california", "texas"}:
     train_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/test.npz",
+        f"data/{DATASET}_001_001_998/test.npz",
         transform=FastSiamMultiViewTransform(n_views=NUM_VIEWS),
     )
     val_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/val.npz",
+        f"data/{DATASET}_001_001_998/val.npz",
         transform=FastSiamMultiViewTransform(n_views=NUM_VIEWS),
     )
 
     knn_train_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/train.npz",
+        f"data/{DATASET}_001_001_998/train.npz",
         transform=knn_transform,
     )
     knn_val_dataset = SitsFinetuneDatasetFromNpz(
-        f"/mnt/c/Users/m/Downloads/grsl/{DATASET}_01_01_998/val.npz",
+        f"data/{DATASET}_001_001_998/val.npz",
         transform=knn_transform,
     )
 elif DATASET == "brazil":
-    gdf = gpd.read_parquet("/home/m/Downloads/gdf.parquet")
+    gdf = gpd.read_parquet("data/agl/gdf.parquet")
 
     class_map = (
         gdf[["crop_class", "crop_number"]]
@@ -167,28 +167,28 @@ elif DATASET == "brazil":
 
     train_dataset = AgriGEELiteDataset(
         gdf_test,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=FastSiamMultiViewTransform(n_views=NUM_VIEWS),
         timestamp_processing="days_after_start",
     )
 
     val_dataset = AgriGEELiteDataset(
         gdf_val,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=FastSiamMultiViewTransform(n_views=NUM_VIEWS),
         timestamp_processing="days_after_start",
     )
 
     knn_train_dataset = AgriGEELiteDataset(
         gdf_val,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=knn_transform,
         timestamp_processing="days_after_start",
     )
 
     knn_val_dataset = AgriGEELiteDataset(
         gdf_train,
-        "/home/m/Downloads/df_sits.parquet",
+        "data/agl/df_sits.parquet",
         transform=knn_transform,
         timestamp_processing="days_after_start",
     )
