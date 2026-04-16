@@ -131,15 +131,15 @@ if PRETRAIN != "off":
     RUN_NAME += f"-{PRETRAIN}"
 
 TAGS = {
-    "dataset": DATASET,
-    "batch_size": BATCH_SIZE,
-    "max_epochs": MAX_EPOCHS,
-    "pretrain": PRETRAIN,
-    "num_warmup_epochs": NUM_WARMUP_EPOCHS,
-    "base_lr": BASE_LR,
-    "train_percent": TRAIN_PERCENT,
-    "model_name": MODEL_NAME,
-    "n_folds": N_FOLDS,
+    "dataset": str(DATASET),
+    "batch_size": str(BATCH_SIZE),
+    "max_epochs": str(MAX_EPOCHS),
+    "pretrain": str(PRETRAIN),
+    "num_warmup_epochs": str(NUM_WARMUP_EPOCHS),
+    "base_lr": str(BASE_LR),
+    "train_percent": str(TRAIN_PERCENT),
+    "model_name": str(MODEL_NAME),
+    "n_folds": str(N_FOLDS),
 }
 
 import mlflow

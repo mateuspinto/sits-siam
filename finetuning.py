@@ -98,15 +98,14 @@ NUM_WARMUP_EPOCHS = 10
 BASE_LR = 1e-4
 
 TAGS = {
-    "dataset": DATASET,
-    "batch_size": BATCH_SIZE,
-    "max_epochs": MAX_EPOCHS,
-    "pretrain": PRETRAIN,
-    "num_warmup_epochs": NUM_WARMUP_EPOCHS,
-    "base_lr": BASE_LR,
-    "train_percent": TRAIN_PERCENT,
-    "model_name": MODEL_NAME,
-    "pretrain": _parsed_args.pretrain,
+    "dataset": str(DATASET),
+    "batch_size": str(BATCH_SIZE),
+    "max_epochs": str(MAX_EPOCHS),
+    "num_warmup_epochs": str(NUM_WARMUP_EPOCHS),
+    "base_lr": str(BASE_LR),
+    "train_percent": str(TRAIN_PERCENT),
+    "model_name": str(MODEL_NAME),
+    "pretrain": str(_parsed_args.pretrain),
 }
 RUN_NAME = f"{MODEL_NAME}-{TRAIN_PERCENT}"
 EXPERIMENT_NAME = f"{DATASET}-finetuning"
