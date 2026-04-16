@@ -50,7 +50,6 @@ from sits_siam.auxiliar import (
     run_gemos,
     save_pytorch_model,
     split_with_percent_and_class_coverage,
-    check_if_already_ran,
 )
 from sits_siam.models import (
     SITSBert,
@@ -119,9 +118,8 @@ TAGS = {
     "n_folds": N_FOLDS,
 }
 
-if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
-    print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
-    exit()
+import mlflow
+mlflow.set_experiment(EXPERIMENT_NAME)  # creates on server if not exists
 
 # ---------------------------------------------------------------------------
 # Transforms

@@ -65,6 +65,7 @@ def load_pretrain_weights(dataset, pretrain_strategy, model_name, model):
     return model
 
 def check_if_already_ran(experiment_name, run_name):
+    mlflow.set_experiment(experiment_name)  # creates if not exists
     runs_df = mlflow.search_runs(experiment_names=[experiment_name])
     return len(runs_df[runs_df["tags.mlflow.runName"] == run_name]) > 0
 
