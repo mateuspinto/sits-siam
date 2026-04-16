@@ -15,8 +15,21 @@ import warnings
 import sys
 import logging
 import tempfile
+import os
 
 IS_TTY = sys.stdout.isatty()  # False when stdout redirected to log file
+
+# ---------------------------------------------------------------------------
+# Thread limits — script runs twice in parallel (one per GPU).
+# Each process gets at most half the available CPU cores.
+# Must be set BEFORE importing numpy / torch so OMP/MKL honour them.
+# ---------------------------------------------------------------------------
+_HALF_CORES = str(max(1, os.cpu_count() // 2))
+os.environ.setdefault("OMP_NUM_THREADS",  _HALF_CORES)
+os.environ.setdefault("MKL_NUM_THREADS",  _HALF_CORES)
+os.environ.setdefault("OPENBLAS_NUM_THREADS", _HALF_CORES)
+os.environ.setdefault("NUMEXPR_NUM_THREADS",  _HALF_CORES)
+NUM_WORKERS = max(1, int(_HALF_CORES) // 2)  # DataLoader workers per process
 
 # Suppress Lightning's "install litlogger" tip and other INFO noise
 logging.getLogger("lightning.pytorch").setLevel(logging.WARNING)
@@ -71,6 +84,8 @@ from sits_siam.utils import AgriGEELiteDataset, SitsFinetuneDatasetFromNpz
 
 patch_sklearn()
 torch.set_float32_matmul_precision("high")
+torch.set_num_threads(int(_HALF_CORES))
+torch.set_num_interop_threads(max(1, int(_HALF_CORES) // 2))
 setup_seed()
 
 # ---------------------------------------------------------------------------
@@ -526,7 +541,7 @@ class Phase3_ConfidNetFinetuning(pl.LightningModule):
 # KFold helpers
 # ---------------------------------------------------------------------------
 
-def _make_dataloader(dataset, batch_size, sampler=None, shuffle=False, num_workers=4):
+def _make_dataloader(dataset, batch_size, sampler=None, shuffle=False, num_workers=NUM_WORKERS):
     return torch.utils.data.DataLoader(
         dataset, batch_size=batch_size, sampler=sampler,
         shuffle=shuffle, num_workers=num_workers, pin_memory=True,
@@ -795,16 +810,16 @@ sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights),
 
 train_dataloader = torch.utils.data.DataLoader(
     train_dataset, batch_size=BATCH_SIZE, sampler=sampler,
-    shuffle=False, num_workers=4, pin_memory=True,
+    shuffle=False, num_workers=NUM_WORKERS, pin_memory=True,
 )
 val_dataloader = torch.utils.data.DataLoader(
-    val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True,
+    val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True,
 )
 test_dataloader = torch.utils.data.DataLoader(
-    test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True,
+    test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True,
 )
 train_val_dataloader = torch.utils.data.DataLoader(
-    train_val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True,
+    train_val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True,
 )
 
 # ---------------------------------------------------------------------------
