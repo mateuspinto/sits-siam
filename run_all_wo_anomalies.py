@@ -1,36 +1,43 @@
 import os
+import subprocess
+from multiprocessing import Process
 
 WORK_DIR = os.path.dirname(os.path.abspath(__file__))
-
-MODELS = ["MAMBA", "BERTPP"]
 PERCENTAGES = [70, 10, 1]
 DATASET = "brazil"
 PRETRAIN = "MoCo"
-GPU = 0
+
+
+def run_model(model, gpu):
+    os.chdir(WORK_DIR)
+    for pct in PERCENTAGES:
+        print(f"\n[GPU {gpu}] START {model} | {DATASET} {pct}% | pretrain={PRETRAIN}")
+
+        cmd = [
+            "python", "finetuning_without_anomalies.py",
+            "--model_name", model,
+            "--dataset", DATASET,
+            "--train_percent", str(pct),
+            "--pretrain", PRETRAIN,
+            "--gpu", str(gpu),
+        ]
+
+        result = subprocess.run(cmd, cwd=WORK_DIR)
+
+        if result.returncode != 0:
+            print(f"[GPU {gpu}] ERRO: {model} {DATASET} {pct}% (exit {result.returncode})")
+        else:
+            print(f"[GPU {gpu}] OK: {model} {DATASET} {pct}%")
+
 
 if __name__ == "__main__":
-    os.chdir(WORK_DIR)
+    p0 = Process(target=run_model, args=("BERTPP", 0))
+    p1 = Process(target=run_model, args=("MAMBA",  1))
 
-    total = len(MODELS) * len(PERCENTAGES)
-    count = 0
+    p0.start()
+    p1.start()
 
-    for model in MODELS:
-        for pct in PERCENTAGES:
-            count += 1
-            print(f"\n[{count}/{total}] {model} | {DATASET} {pct}% | pretrain={PRETRAIN}")
+    p0.join()
+    p1.join()
 
-            cmd = (
-                f"python finetuning_without_anomalies.py "
-                f"--model_name {model} "
-                f"--dataset {DATASET} "
-                f"--train_percent {pct} "
-                f"--pretrain {PRETRAIN} "
-                f"--gpu {GPU}"
-            )
-
-            exit_code = os.system(cmd)
-
-            if exit_code != 0:
-                print(f"ERRO: {model} {DATASET} {pct}% (exit {exit_code})")
-            else:
-                print(f"OK: {model} {DATASET} {pct}%")
+    print("\nAmbos terminaram.")

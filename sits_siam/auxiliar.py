@@ -4,6 +4,16 @@ import tempfile
 import joblib
 import json
 
+# ---------------------------------------------------------------------------
+# Remote MLflow + MinIO config
+# Set before any mlflow import so all scripts pick this up automatically.
+# ---------------------------------------------------------------------------
+os.environ.setdefault("MLFLOW_TRACKING_URI",    "http://xaplprd156r:8889")
+os.environ.setdefault("AWS_ACCESS_KEY_ID",       "admin")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY",   "password123")
+os.environ.setdefault("MLFLOW_S3_ENDPOINT_URL",  "http://xaplprd156r:8891")
+os.environ.setdefault("MLFLOW_S3_IGNORE_TLS",    "true")
+
 import geopandas as gpd
 import lightning.pytorch as pl
 import numpy as np

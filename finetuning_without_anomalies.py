@@ -11,6 +11,7 @@ Pipeline:
 import copy
 import math
 import argparse
+import warnings
 
 import geopandas as gpd
 import numpy as np
@@ -550,11 +551,70 @@ def _get_embeddings(model, dataloader, device):
     )
 
 
+def _fit_gmm_robust(X, n_components, cls_label):
+    """
+    Fit GaussianMixture with progressive fallback on convergence/numerical failure.
+
+    Attempt order:
+      1. Requested n_components, k-means++ init, reg_covar=1e-4
+      2. n_components=1, random init, reg_covar=1e-3  (most convergence issues go away)
+      3. n_components=1, random init, reg_covar=1e-1, covariance_type='diag'
+
+    Returns fitted GMM, or None if all attempts fail (caller treats class as non-anomalous).
+    """
+    from sklearn.exceptions import ConvergenceWarning
+
+    attempts = [
+        dict(n_components=n_components, init_params="k-means++",
+             max_iter=300, n_init=3, reg_covar=1e-4, covariance_type="full"),
+        dict(n_components=1, init_params="random",
+             max_iter=500, n_init=5, reg_covar=1e-3, covariance_type="full"),
+        dict(n_components=1, init_params="random",
+             max_iter=500, n_init=5, reg_covar=1e-1, covariance_type="diag"),
+    ]
+
+    for i, kwargs in enumerate(attempts):
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", ConvergenceWarning)
+                gmm = GaussianMixture(random_state=42, **kwargs).fit(X)
+
+            if any(issubclass(w.category, ConvergenceWarning) for w in caught):
+                if i < len(attempts) - 1:
+                    print(
+                        f"  [GMM WARNING] class={cls_label!r}, attempt {i+1}: "
+                        f"ConvergenceWarning with {kwargs}. Retrying..."
+                    )
+                    continue
+                else:
+                    print(
+                        f"  [GMM WARNING] class={cls_label!r}: all attempts converged poorly. "
+                        f"Using last fit — class treated as non-anomalous."
+                    )
+                    return None
+
+            return gmm
+
+        except Exception as exc:
+            print(
+                f"  [GMM WARNING] class={cls_label!r}, attempt {i+1}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    print(
+        f"  [GMM WARNING] class={cls_label!r}: all {len(attempts)} attempts failed. "
+        f"Skipping — all val samples of this class treated as non-anomalous."
+    )
+    return None
+
+
 def _gmm_anomaly_flags(train_preds, train_labels, train_embs, val_preds, val_embs):
     """
     Per-class GMM fitted on correctly-predicted train samples.
     Threshold = 2.5th percentile of train GMM scores.
     Returns boolean anomaly array for val samples.
+
+    If GMM fitting fails for a class, that class's val samples are NOT flagged as anomalies.
     """
     val_anomaly = np.zeros(len(val_preds), dtype=bool)
 
@@ -563,19 +623,25 @@ def _gmm_anomaly_flags(train_preds, train_labels, train_embs, val_preds, val_emb
         X_cls = train_embs[correct_mask]
 
         if len(X_cls) < 5:
-            # Too few samples — do not flag as anomaly
+            # Too few samples — skip, treat as non-anomalous
             continue
 
         n_comp = min(3, max(1, len(X_cls) // 20))
-        gmm = GaussianMixture(
-            n_components=n_comp, random_state=42, init_params="k-means++"
-        ).fit(X_cls)
-        threshold = np.percentile(gmm.score_samples(X_cls), 2.5)
+        gmm = _fit_gmm_robust(X_cls, n_comp, cls)
+        if gmm is None:
+            continue  # all val samples of this class stay False (non-anomalous)
 
-        val_cls_mask = val_preds == cls
-        if val_cls_mask.any():
-            scores = gmm.score_samples(val_embs[val_cls_mask])
-            val_anomaly[val_cls_mask] = scores < threshold
+        try:
+            threshold = np.percentile(gmm.score_samples(X_cls), 2.5)
+            val_cls_mask = val_preds == cls
+            if val_cls_mask.any():
+                scores = gmm.score_samples(val_embs[val_cls_mask])
+                val_anomaly[val_cls_mask] = scores < threshold
+        except Exception as exc:
+            print(
+                f"  [GMM WARNING] class={cls!r}: scoring failed ({type(exc).__name__}: {exc}). "
+                f"Class treated as non-anomalous."
+            )
 
     return val_anomaly
 
