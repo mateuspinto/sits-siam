@@ -13,8 +13,14 @@ import math
 import argparse
 import warnings
 import sys
+import logging
+import tempfile
 
 IS_TTY = sys.stdout.isatty()  # False when stdout redirected to log file
+
+# Suppress Lightning's "install litlogger" tip and other INFO noise
+logging.getLogger("lightning.pytorch").setLevel(logging.WARNING)
+logging.getLogger("lightning.fabric").setLevel(logging.WARNING)
 
 import geopandas as gpd
 import numpy as np
@@ -662,8 +668,9 @@ def _train_kfold_phase1(fold_train_ds, fold_val_ds, fold_idx):
         base_lr=BASE_LR,
     )
 
+    ckpt_dir = tempfile.mkdtemp(prefix=f"kfold_fold{fold_idx}_")
     ckpt_cb = ModelCheckpoint(
-        monitor="p1_val_loss", mode="min", filename=f"kfold_fold{fold_idx}"
+        dirpath=ckpt_dir, monitor="p1_val_loss", mode="min", filename="best"
     )
     es_cb = EarlyStopping(monitor="p1_val_loss", patience=10, mode="min")
 
@@ -803,7 +810,12 @@ train_val_dataloader = torch.utils.data.DataLoader(
 # ---------------------------------------------------------------------------
 # MLflow logger (used for all 3 final phases)
 # ---------------------------------------------------------------------------
-mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, tags=TAGS, run_name=RUN_NAME)
+mlflow_logger = MLFlowLogger(
+    experiment_name=EXPERIMENT_NAME,
+    tags=TAGS,
+    run_name=RUN_NAME,
+    tracking_uri=mlflow.get_tracking_uri(),  # explicit — uses MLFLOW_TRACKING_URI env var
+)
 
 # Log anomaly stats
 mlflow_logger.experiment.log_metric(mlflow_logger.run_id, "kfold_anomaly_rate_train", train_anomaly_flags.mean())
