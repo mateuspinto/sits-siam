@@ -12,6 +12,9 @@ import copy
 import math
 import argparse
 import warnings
+import sys
+
+IS_TTY = sys.stdout.isatty()  # False when stdout redirected to log file
 
 import geopandas as gpd
 import numpy as np
@@ -534,7 +537,7 @@ def _get_embeddings(model, dataloader, device):
     """Return (preds, labels, embeddings) arrays from a Phase1_Classifier."""
     model.eval().to(device)
     preds_l, labels_l, embs_l = [], [], []
-    for batch in tqdm(dataloader, leave=False, desc="  embeddings"):
+    for batch in tqdm(dataloader, leave=False, desc="  embeddings", disable=not IS_TTY):
         x = batch["x"].to(device)
         doy = batch["doy"].to(device)
         mask = batch["mask"].to(device)
@@ -671,7 +674,7 @@ def _train_kfold_phase1(fold_train_ds, fold_val_ds, fold_idx):
         devices=[GPU_ID],
         precision="bf16-mixed",
         callbacks=[ckpt_cb, es_cb],
-        enable_progress_bar=True,
+        enable_progress_bar=IS_TTY,
         logger=False,  # No MLflow during KFold
         log_every_n_steps=5,
     )
@@ -738,14 +741,13 @@ clean_train_idx = np.where(~train_anomaly_flags)[0]
 clean_val_idx = N_TRAIN + np.where(~val_anomaly_flags)[0]
 clean_trainval_idx = np.where(~anomaly_flags)[0]
 
+N_VAL = len(trainval_aug) - N_TRAIN
+clean_val_pos = np.where(~val_anomaly_flags)[0]  # positions within val slice (0-based)
+
 print(f"Clean train: {len(clean_train_idx)}/{N_TRAIN} "
       f"({100*(1-train_anomaly_flags.mean()):.1f}% kept)")
-N_VAL = len(trainval_aug) - N_TRAIN
 print(f"Clean val:   {len(clean_val_pos)}/{N_VAL} "
       f"({100*(1-val_anomaly_flags.mean()):.1f}% kept)")
-
-# Map val indices back to 0-based positions within trainval
-clean_val_pos = np.where(~val_anomaly_flags)[0]  # positions within val slice
 
 if DATASET == "brazil":
     # Subsets using positions within trainval_(aug|noaug) datasets
@@ -839,6 +841,7 @@ trainer_p1 = pl.Trainer(
     callbacks=[checkpoint_cb_p1, early_stopping_cb_p1, devicestats_monitor],
     logger=mlflow_logger,
     log_every_n_steps=5,
+    enable_progress_bar=IS_TTY,
 )
 
 trainer_p1.fit(model_phase1, train_dataloader, val_dataloader)
@@ -870,6 +873,7 @@ trainer_p2 = pl.Trainer(
     callbacks=[checkpoint_cb_p2, early_stopping_cb_p2],
     logger=mlflow_logger,
     log_every_n_steps=5,
+    enable_progress_bar=IS_TTY,
 )
 
 trainer_p2.fit(model_phase2, train_dataloader, val_dataloader)
@@ -903,6 +907,7 @@ trainer_p3 = pl.Trainer(
     callbacks=[checkpoint_cb_p3, early_stopping_cb_p3],
     logger=mlflow_logger,
     log_every_n_steps=5,
+    enable_progress_bar=IS_TTY,
 )
 
 trainer_p3.fit(model_phase3, train_dataloader, val_dataloader)
