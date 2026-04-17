@@ -24,7 +24,6 @@ import lightning.pytorch as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from lightning.fabric.utilities.throughput import measure_flops
 from lightning.pytorch.callbacks import DeviceStatsMonitor, ModelCheckpoint
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.loggers import MLFlowLogger
@@ -136,9 +135,9 @@ if PRETRAIN != "off":
 import mlflow
 mlflow.set_experiment(EXPERIMENT_NAME)
 
-if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
-    print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
-    exit()
+# if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
+#     print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
+#     exit()
 
 
 transforms = Pipeline(
@@ -599,18 +598,6 @@ model_phase1 = Phase1_Classifier(
     base_lr=BASE_LR,
 )
 
-
-with torch.device("meta"):
-
-    def model_fwd():
-        return model_phase1(*model_phase1.backbone.example_input_array)
-
-    fwd_flops = measure_flops(model_phase1, model_fwd)
-    print(f"Forward FLOPs: {fwd_flops}")
-
-
-# Carregar pesos pré-treinados do SITS-BERT se houver
-# model_phase1.backbone.load_state_dict(torch.load("siam_texas_new_bert.pth"))
 
 mlflow_logger = MLFlowLogger(
     experiment_name=EXPERIMENT_NAME,
