@@ -2,7 +2,21 @@ import copy
 import math
 import argparse
 import os
+import sys
+import logging
 import tempfile
+
+IS_TTY = sys.stdout.isatty()
+
+_HALF_CORES = str(max(1, os.cpu_count() // 2))
+os.environ.setdefault("OMP_NUM_THREADS",      _HALF_CORES)
+os.environ.setdefault("MKL_NUM_THREADS",      _HALF_CORES)
+os.environ.setdefault("OPENBLAS_NUM_THREADS", _HALF_CORES)
+os.environ.setdefault("NUMEXPR_NUM_THREADS",  _HALF_CORES)
+NUM_WORKERS = max(1, int(_HALF_CORES) // 2)
+
+logging.getLogger("lightning.pytorch").setLevel(logging.WARNING)
+logging.getLogger("lightning.fabric").setLevel(logging.WARNING)
 
 import geopandas as gpd
 import pandas as pd
@@ -32,6 +46,8 @@ from sits_siam.augment import (
     RandomTempSwapping,
     ToPytorchTensor,
 )
+from sklearn.metrics import accuracy_score, classification_report, f1_score
+
 from sits_siam.auxiliar import (
     load_pretrain_weights,
     predict_and_save_predictions,
@@ -39,7 +55,8 @@ from sits_siam.auxiliar import (
     run_gemos,
     save_pytorch_model,
     split_with_percent_and_class_coverage,
-    check_if_already_ran
+    check_if_already_ran,
+    string_confusion_matrix,
 )
 from sits_siam.models import (
     SITSBert,  # BERT
@@ -52,8 +69,9 @@ from sits_siam.utils import AgriGEELiteDataset, SitsFinetuneDatasetFromNpz
 
 patch_sklearn()
 torch.set_float32_matmul_precision("high")
+torch.set_num_threads(int(_HALF_CORES))
+torch.set_num_interop_threads(max(1, int(_HALF_CORES) // 2))
 setup_seed()
-# beautify_prints()
 
 
 BATCHED_ARGS_PARSER = argparse.ArgumentParser(add_help=False)
@@ -114,6 +132,9 @@ EXPERIMENT_NAME = f"{DATASET}-finetuning"
 
 if PRETRAIN != "off":
     RUN_NAME += f"-{PRETRAIN}"
+
+import mlflow
+mlflow.set_experiment(EXPERIMENT_NAME)
 
 if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
     print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
@@ -482,7 +503,7 @@ class Phase3_ConfidNetFinetuning(pl.LightningModule):
         confidence = self.confid_net(pooled)
 
         with torch.no_grad():
-            pooled_frozen, logits_frozen, _ = self.backbone(x, doy, mask)
+            pooled_frozen, logits_frozen, _ = self.backbone_frozen(x, doy, mask)
 
         return confidence, logits_frozen, pooled_frozen, pooled_frozen
 
@@ -558,14 +579,14 @@ train_dataloader = torch.utils.data.DataLoader(
     batch_size=BATCH_SIZE,
     sampler=sampler,
     shuffle=False,
-    num_workers=4,
+    num_workers=NUM_WORKERS,
     pin_memory=True,
 )
 val_dataloader = torch.utils.data.DataLoader(
-    val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True
+    val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True
 )
 test_dataloader = torch.utils.data.DataLoader(
-    test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True
+    test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True
 )
 
 print("--- INICIANDO FASE 1: Classificação ---")
@@ -592,7 +613,10 @@ with torch.device("meta"):
 # model_phase1.backbone.load_state_dict(torch.load("siam_texas_new_bert.pth"))
 
 mlflow_logger = MLFlowLogger(
-    experiment_name=EXPERIMENT_NAME, tags=TAGS, run_name=RUN_NAME
+    experiment_name=EXPERIMENT_NAME,
+    tags=TAGS,
+    run_name=RUN_NAME,
+    tracking_uri=mlflow.get_tracking_uri(),
 )
 
 checkpoint_cb_p1 = ModelCheckpoint(
@@ -616,6 +640,7 @@ trainer_p1 = pl.Trainer(
     callbacks=[checkpoint_cb_p1, early_stopping_cb_p1, devicestats_monitor],
     logger=mlflow_logger,
     log_every_n_steps=5,
+    enable_progress_bar=IS_TTY,
 )
 
 trainer_p1.fit(model_phase1, train_dataloader, val_dataloader)
@@ -650,6 +675,7 @@ trainer_p2 = pl.Trainer(
     callbacks=[checkpoint_cb_p2, early_stopping_cb_p2],
     logger=mlflow_logger,
     log_every_n_steps=5,
+    enable_progress_bar=IS_TTY,
 )
 
 trainer_p2.fit(model_phase2, train_dataloader, val_dataloader)
@@ -687,6 +713,7 @@ trainer_p3 = pl.Trainer(
     callbacks=[checkpoint_cb_p3, early_stopping_cb_p3],
     logger=mlflow_logger,
     log_every_n_steps=5,
+    enable_progress_bar=IS_TTY,
 )
 
 trainer_p3.fit(model_phase3, train_dataloader, val_dataloader)
@@ -732,7 +759,7 @@ train_val_dataloader = torch.utils.data.DataLoader(
     train_val_dataset,
     batch_size=BATCH_SIZE,
     shuffle=False,
-    num_workers=4,
+    num_workers=NUM_WORKERS,
     pin_memory=True,
 )
 
@@ -777,6 +804,39 @@ test_gdf = predict_and_save_predictions(
 )
 
 run_gemos(train_gdf, train_val_gdf, val_gdf, test_gdf, mlflow_logger)
+
+# ---------------------------------------------------------------------------
+# Print all test metrics (goes to log file)
+# ---------------------------------------------------------------------------
+_SEP = "=" * 60
+_class_names = sorted(class_map.values())
+
+print(f"\n{_SEP}")
+print("TEST METRICS — WITH anomalies (all samples)")
+print(_SEP)
+print(f"N={len(test_gdf)}")
+print(f"Accuracy  : {accuracy_score(test_gdf.y_true, test_gdf.y_pred):.4f}")
+print(f"F1-weighted: {f1_score(test_gdf.y_true, test_gdf.y_pred, average='weighted', zero_division=1):.4f}")
+print(f"F1-micro  : {f1_score(test_gdf.y_true, test_gdf.y_pred, average='micro', zero_division=1):.4f}")
+print("\nConfusion Matrix:")
+print(string_confusion_matrix(test_gdf.y_true.tolist(), test_gdf.y_pred.tolist(), _class_names))
+print("\nClassification Report:")
+print(classification_report(test_gdf.y_true, test_gdf.y_pred, zero_division=1))
+
+_clean_test = test_gdf[~test_gdf.gmm_gemos_anomaly]
+_anom_pct = test_gdf.gmm_gemos_anomaly.mean() * 100
+print(f"\n{_SEP}")
+print(f"TEST METRICS — WITHOUT anomalies (GMM-filtered, {_anom_pct:.1f}% removed)")
+print(_SEP)
+print(f"N={len(_clean_test)}")
+print(f"Accuracy  : {accuracy_score(_clean_test.y_true, _clean_test.gmm_pred):.4f}")
+print(f"F1-weighted: {f1_score(_clean_test.y_true, _clean_test.gmm_pred, average='weighted', zero_division=1):.4f}")
+print(f"F1-micro  : {f1_score(_clean_test.y_true, _clean_test.gmm_pred, average='micro', zero_division=1):.4f}")
+print("\nConfusion Matrix:")
+print(string_confusion_matrix(_clean_test.y_true.tolist(), _clean_test.gmm_pred.tolist(), _class_names))
+print("\nClassification Report:")
+print(classification_report(_clean_test.y_true, _clean_test.gmm_pred, zero_division=1))
+
 save_pytorch_model(best_model_p3, mlflow_logger)
 
 # ---------------------------------------------------------------------------
