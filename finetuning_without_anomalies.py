@@ -982,4 +982,13 @@ test_gdf = predict_and_save_predictions(
 run_gemos(train_gdf, train_val_gdf, val_gdf, test_gdf, mlflow_logger)
 save_pytorch_model(best_model_p3, mlflow_logger)
 
+# ---------------------------------------------------------------------------
+# Save train_without_anomalies.parquet as MLflow artifact
+# ---------------------------------------------------------------------------
+with tempfile.TemporaryDirectory() as _tmp:
+    _p = os.path.join(_tmp, "train_without_anomalies.parquet")
+    train_val_gdf.to_parquet(_p, index=False)
+    mlflow_logger.experiment.log_artifact(mlflow_logger.run_id, _p)
+print(f"Saved train_without_anomalies.parquet ({len(train_val_gdf)} samples) to MLflow.")
+
 print("\nDone.")
