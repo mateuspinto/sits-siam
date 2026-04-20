@@ -51,6 +51,7 @@ patch_sklearn()
 setup_seed()
 beautify_prints()
 torch.set_float32_matmul_precision("high")
+import mlflow
 
 BATCH_SIZE = 8 * 512
 MAX_EPOCHS = 400
@@ -390,7 +391,13 @@ early_stopping_callback = EarlyStopping(
     mode="min",
 )
 
-mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, run_name=RUN_NAME)
+mlflow.set_experiment(EXPERIMENT_NAME)
+mlflow_logger = MLFlowLogger(
+    experiment_name=EXPERIMENT_NAME,
+    tags=TAGS,
+    run_name=RUN_NAME,
+    tracking_uri=mlflow.get_tracking_uri(),
+)
 
 tsne_callback = TSNECallback(
     train_dataset=knn_val_dataset,

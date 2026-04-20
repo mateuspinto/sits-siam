@@ -45,6 +45,7 @@ patch_sklearn()
 setup_seed()
 
 torch.set_float32_matmul_precision("high")
+import mlflow
 
 BATCH_SIZE = 8 * 512
 MAX_EPOCHS = 400
@@ -317,7 +318,13 @@ knn_val_dataloader = torch.utils.data.DataLoader(
 )
 
 
-mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, run_name=RUN_NAME)
+mlflow.set_experiment(EXPERIMENT_NAME)
+mlflow_logger = MLFlowLogger(
+    experiment_name=EXPERIMENT_NAME,
+    tags=TAGS,
+    run_name=RUN_NAME,
+    tracking_uri=mlflow.get_tracking_uri(),
+)
 
 reconstruction_callback = ReconstructionCallback(
     val_dataset=val_dataset,

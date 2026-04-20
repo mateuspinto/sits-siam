@@ -12,6 +12,7 @@ from sklearn.decomposition import PCA
 from sklearnex import patch_sklearn
 from tqdm.std import tqdm
 from pytorch_lightning.loggers import MLFlowLogger
+import mlflow
 from torch.utils.data import WeightedRandomSampler
 import optuna
 
@@ -111,6 +112,7 @@ TAGS = {
 }
 EXPERIMENT_NAME = f"{DATASET}-finetuning"
 RUN_NAME_SUFFIX = f"SVM{MODEL_NAME}-{TRAIN_PERCENT}-{PRETRAIN}"
+mlflow.set_experiment(EXPERIMENT_NAME)
 
 if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME_SUFFIX):
     print(f"{RUN_NAME_SUFFIX} already ran in {EXPERIMENT_NAME}. Exiting.")
@@ -488,8 +490,12 @@ def train_svc_from_pretrain(gdf_train, gdf_train_val, gdf_val, gdf_test, run_nam
     gdf_test["y_pred"] = svc_best.predict(X_test)
     gdf_test["y_proba"] = np.max(svc_best.predict_proba(X_test), axis=1)
 
-    # Log to MLflow
-    mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, run_name=run_name)
+    mlflow_logger = MLFlowLogger(
+        experiment_name=EXPERIMENT_NAME,
+        tags=TAGS,
+        run_name=run_name,
+        tracking_uri=mlflow.get_tracking_uri(),
+    )
 
     # Log hyperparameters
     for param_name, param_value in study.best_params.items():

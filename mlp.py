@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from pytorch_lightning.callbacks import DeviceStatsMonitor, ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import MLFlowLogger
+import mlflow
 from sklearn.model_selection import train_test_split
 from sklearnex import patch_sklearn
 from torch.optim.lr_scheduler import LambdaLR
@@ -550,8 +551,12 @@ model_phase1 = Phase1_Classifier(
     base_lr=BASE_LR,
 )
 
+mlflow.set_experiment(EXPERIMENT_NAME)
 mlflow_logger = MLFlowLogger(
-    experiment_name=EXPERIMENT_NAME, tags=TAGS, run_name=RUN_NAME
+    experiment_name=EXPERIMENT_NAME,
+    tags=TAGS,
+    run_name=RUN_NAME,
+    tracking_uri=mlflow.get_tracking_uri(),
 )
 
 checkpoint_cb_p1 = ModelCheckpoint(

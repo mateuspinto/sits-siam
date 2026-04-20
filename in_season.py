@@ -12,6 +12,7 @@ from lightning.fabric.utilities.throughput import measure_flops
 from lightning.pytorch.callbacks import DeviceStatsMonitor, ModelCheckpoint
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.loggers import MLFlowLogger
+import mlflow
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearnex import patch_sklearn
@@ -623,8 +624,12 @@ with torch.device("meta"):
 # Carregar pesos pré-treinados do SITS-BERT se houver
 # model_phase1.backbone.load_state_dict(torch.load("siam_texas_new_bert.pth"))
 
+mlflow.set_experiment(EXPERIMENT_NAME)
 mlflow_logger = MLFlowLogger(
-    experiment_name=EXPERIMENT_NAME, tags=TAGS, run_name=RUN_NAME
+    experiment_name=EXPERIMENT_NAME,
+    tags=TAGS,
+    run_name=RUN_NAME,
+    tracking_uri=mlflow.get_tracking_uri(),
 )
 
 checkpoint_cb_p1 = ModelCheckpoint(

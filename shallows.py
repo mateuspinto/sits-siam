@@ -13,6 +13,7 @@ from sklearn.decomposition import PCA
 from sklearnex import patch_sklearn
 from tqdm.std import tqdm
 from pytorch_lightning.loggers import MLFlowLogger
+import mlflow
 import optuna
 
 from sits_siam.augment import (
@@ -78,6 +79,7 @@ TAGS = {
 }
 EXPERIMENT_NAME = f"{DATASET}-finetuning"
 RUN_NAME_SUFFIX = f"{TRAIN_PERCENT}"
+mlflow.set_experiment(EXPERIMENT_NAME)
 
 if (
     check_if_already_ran(
@@ -346,7 +348,12 @@ def train_lgbm(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name):
     gdf_test["y_pred"] = lgbm.predict(gdf_test[X_COLUMNS])
     gdf_test["y_proba"] = np.max(lgbm.predict_proba(gdf_test[X_COLUMNS]), axis=1)
 
-    mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, run_name=run_name)
+    mlflow_logger = MLFlowLogger(
+        experiment_name=EXPERIMENT_NAME,
+        tags=TAGS,
+        run_name=run_name,
+        tracking_uri=mlflow.get_tracking_uri(),
+    )
 
     run_gemos(gdf_train, gdf_train_val, gdf_val, gdf_test, mlflow_logger, True, 100)
     save_other_model(lgbm, mlflow_logger)
@@ -450,7 +457,12 @@ def train_svc(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name, n_trials=60
     gdf_test["y_pred"] = svc_best.predict(X_test)
     gdf_test["y_proba"] = np.max(svc_best.predict_proba(X_test), axis=1)
 
-    mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, run_name=run_name)
+    mlflow_logger = MLFlowLogger(
+        experiment_name=EXPERIMENT_NAME,
+        tags=TAGS,
+        run_name=run_name,
+        tracking_uri=mlflow.get_tracking_uri(),
+    )
 
     for param_name, param_value in study.best_params.items():
         mlflow_logger.experiment.log_param(
@@ -544,7 +556,12 @@ def train_rf(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name, n_trials=30)
     gdf_test["y_pred"] = rf_best.predict(X_test)
     gdf_test["y_proba"] = np.max(rf_best.predict_proba(X_test), axis=1)
 
-    mlflow_logger = MLFlowLogger(experiment_name=EXPERIMENT_NAME, run_name=run_name)
+    mlflow_logger = MLFlowLogger(
+        experiment_name=EXPERIMENT_NAME,
+        tags=TAGS,
+        run_name=run_name,
+        tracking_uri=mlflow.get_tracking_uri(),
+    )
 
     for param_name, param_value in study.best_params.items():
         mlflow_logger.experiment.log_param(
