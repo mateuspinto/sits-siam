@@ -81,22 +81,22 @@ EXPERIMENT_NAME = f"{DATASET}-finetuning"
 RUN_NAME_SUFFIX = f"{TRAIN_PERCENT}"
 mlflow.set_experiment(EXPERIMENT_NAME)
 
-if (
-    check_if_already_ran(
-        EXPERIMENT_NAME,
-        f"RF-{RUN_NAME_SUFFIX}",
-    )
-    and check_if_already_ran(
-        EXPERIMENT_NAME,
-        f"LGBM-{RUN_NAME_SUFFIX}",
-    )
-    and check_if_already_ran(
-        EXPERIMENT_NAME,
-        f"SVM-{RUN_NAME_SUFFIX}",
-    )
-):
-    print("All models already ran. Exiting.")
-    exit(0)
+# if (
+#     check_if_already_ran(
+#         EXPERIMENT_NAME,
+#         f"RF-{RUN_NAME_SUFFIX}",
+#     )
+#     and check_if_already_ran(
+#         EXPERIMENT_NAME,
+#         f"LGBM-{RUN_NAME_SUFFIX}",
+#     )
+#     and check_if_already_ran(
+#         EXPERIMENT_NAME,
+#         f"SVM-{RUN_NAME_SUFFIX}",
+#     )
+# ):
+#     print("All models already ran. Exiting.")
+#     exit(0)
 
 transforms = Pipeline(
     [
@@ -294,9 +294,9 @@ elif DATASET in {"texas", "california"}:
 
 
 def train_lgbm(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name):
-    if check_if_already_ran(EXPERIMENT_NAME, run_name):
-        print(run_name, "already ran in", EXPERIMENT_NAME)
-        return
+    # if check_if_already_ran(EXPERIMENT_NAME, run_name):
+    #     print(run_name, "already ran in", EXPERIMENT_NAME)
+    #     return
 
     gdf_train = gdf_train.copy()
     gdf_train_val = gdf_train_val.copy()
@@ -360,9 +360,9 @@ def train_lgbm(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name):
 
 
 def train_svc(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name, n_trials=60):
-    if check_if_already_ran(EXPERIMENT_NAME, run_name):
-        print(run_name, "already ran in", EXPERIMENT_NAME)
-        return
+    # if check_if_already_ran(EXPERIMENT_NAME, run_name):
+    #     print(run_name, "already ran in", EXPERIMENT_NAME)
+    #     return
 
     if len(gdf_train) > 10_000:
         sampled_gdf_train = (
@@ -474,9 +474,9 @@ def train_svc(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name, n_trials=60
 
 
 def train_rf(gdf_train, gdf_train_val, gdf_val, gdf_test, run_name, n_trials=30):
-    if check_if_already_ran(EXPERIMENT_NAME, run_name):
-        print(run_name, "already ran in", EXPERIMENT_NAME)
-        return
+    # if check_if_already_ran(EXPERIMENT_NAME, run_name):
+    #     print(run_name, "already ran in", EXPERIMENT_NAME)
+    #     return
 
     X_train = gdf_train[X_COLUMNS].to_numpy().astype(np.float32)
     y_train = gdf_train["crop_class"].values

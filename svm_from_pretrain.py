@@ -114,9 +114,9 @@ EXPERIMENT_NAME = f"{DATASET}-finetuning"
 RUN_NAME_SUFFIX = f"SVM{MODEL_NAME}-{TRAIN_PERCENT}-{PRETRAIN}"
 mlflow.set_experiment(EXPERIMENT_NAME)
 
-if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME_SUFFIX):
-    print(f"{RUN_NAME_SUFFIX} already ran in {EXPERIMENT_NAME}. Exiting.")
-    exit(0)
+# if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME_SUFFIX):
+#     print(f"{RUN_NAME_SUFFIX} already ran in {EXPERIMENT_NAME}. Exiting.")
+#     exit(0)
 
 # Setup transforms
 transforms = Pipeline(

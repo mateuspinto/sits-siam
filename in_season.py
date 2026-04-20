@@ -145,9 +145,9 @@ EXPERIMENT_NAME = f"inseason-{DATASET}-finetuning"
 if PRETRAIN != "off":
     RUN_NAME += f"-{PRETRAIN}"
 
-if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
-    print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
-    exit()
+# if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
+#     print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
+#     exit()
 
 
 transforms = Pipeline(

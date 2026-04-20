@@ -88,9 +88,9 @@ TAGS = {
 RUN_NAME = f"MLP-{TRAIN_PERCENT}"
 EXPERIMENT_NAME = f"{DATASET}-finetuning"
 
-if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
-    print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
-    exit()
+# if check_if_already_ran(EXPERIMENT_NAME, RUN_NAME):
+#     print(RUN_NAME, "already ran in", EXPERIMENT_NAME)
+#     exit()
 
 transforms = Pipeline(
     [
