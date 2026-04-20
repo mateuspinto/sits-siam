@@ -1,3 +1,11 @@
+import os
+_HALF_CORES = str(max(1, os.cpu_count() // 2))
+os.environ.setdefault("OMP_NUM_THREADS",      _HALF_CORES)
+os.environ.setdefault("MKL_NUM_THREADS",      _HALF_CORES)
+os.environ.setdefault("OPENBLAS_NUM_THREADS", _HALF_CORES)
+os.environ.setdefault("NUMEXPR_NUM_THREADS",  _HALF_CORES)
+NUM_WORKERS = max(1, int(_HALF_CORES) // 2)
+
 import argparse
 import geopandas as gpd
 import numpy as np
@@ -261,28 +269,28 @@ train_dataloader = torch.utils.data.DataLoader(
     batch_size=BATCH_SIZE,
     sampler=sampler,
     shuffle=False,
-    num_workers=4,
+    num_workers=NUM_WORKERS,
     pin_memory=True,
 )
 train_val_dataloader = torch.utils.data.DataLoader(
     train_val_dataset,
     batch_size=BATCH_SIZE,
     shuffle=False,
-    num_workers=4,
+    num_workers=NUM_WORKERS,
     pin_memory=True,
 )
 val_dataloader = torch.utils.data.DataLoader(
     val_dataset,
     batch_size=BATCH_SIZE,
     shuffle=False,
-    num_workers=4,
+    num_workers=NUM_WORKERS,
     pin_memory=True,
 )
 test_dataloader = torch.utils.data.DataLoader(
     test_dataset,
     batch_size=BATCH_SIZE,
     shuffle=False,
-    num_workers=4,
+    num_workers=NUM_WORKERS,
     pin_memory=True,
 )
 

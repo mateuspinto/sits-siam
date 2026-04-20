@@ -1,3 +1,11 @@
+import os
+_HALF_CORES = str(max(1, os.cpu_count() // 2))
+os.environ.setdefault("OMP_NUM_THREADS",      _HALF_CORES)
+os.environ.setdefault("MKL_NUM_THREADS",      _HALF_CORES)
+os.environ.setdefault("OPENBLAS_NUM_THREADS", _HALF_CORES)
+os.environ.setdefault("NUMEXPR_NUM_THREADS",  _HALF_CORES)
+NUM_WORKERS = max(1, int(_HALF_CORES) // 2)
+
 import argparse
 import geopandas as gpd
 from lightgbm import LGBMClassifier, early_stopping

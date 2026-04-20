@@ -1,3 +1,11 @@
+import os
+_HALF_CORES = str(max(1, os.cpu_count() // 2))
+os.environ.setdefault("OMP_NUM_THREADS",      _HALF_CORES)
+os.environ.setdefault("MKL_NUM_THREADS",      _HALF_CORES)
+os.environ.setdefault("OPENBLAS_NUM_THREADS", _HALF_CORES)
+os.environ.setdefault("NUMEXPR_NUM_THREADS",  _HALF_CORES)
+NUM_WORKERS = max(1, int(_HALF_CORES) // 2)
+
 import math
 import argparse
 import copy
@@ -54,6 +62,8 @@ patch_sklearn()
 setup_seed()
 beautify_prints()
 torch.set_float32_matmul_precision("high")
+torch.set_num_threads(int(_HALF_CORES))
+torch.set_num_interop_threads(max(1, int(_HALF_CORES) // 2))
 import mlflow
 
 # Suprime warnings do lightly sobre torch.tensor
@@ -379,24 +389,24 @@ class TransformerClassifier(pl.LightningModule):
 
 
 train_dataloader = torch.utils.data.DataLoader(
-    train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True
+    train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True
 )
 val_dataloader = torch.utils.data.DataLoader(
-    val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True
+    val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True
 )
 
 knn_train_dataloader = torch.utils.data.DataLoader(
     knn_train_dataset,
     batch_size=BATCH_SIZE,
     shuffle=True,
-    num_workers=4,
+    num_workers=NUM_WORKERS,
     pin_memory=True,
 )
 knn_val_dataloader = torch.utils.data.DataLoader(
     knn_val_dataset,
     batch_size=BATCH_SIZE,
     shuffle=False,
-    num_workers=4,
+    num_workers=NUM_WORKERS,
     pin_memory=True,
 )
 
