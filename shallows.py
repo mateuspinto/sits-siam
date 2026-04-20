@@ -72,10 +72,10 @@ N_TRIALS = _parsed_args.n_trials
 N_JOBS = _parsed_args.n_jobs
 
 TAGS = {
-    "dataset": DATASET,
-    "train_percent": TRAIN_PERCENT,
-    "n_trials": N_TRIALS,
-    "n_jobs": N_JOBS,
+    "dataset": str(DATASET),
+    "train_percent": str(TRAIN_PERCENT),
+    "n_trials": str(N_TRIALS),
+    "n_jobs": str(N_JOBS),
 }
 EXPERIMENT_NAME = f"{DATASET}-finetuning"
 RUN_NAME_SUFFIX = f"{TRAIN_PERCENT}"

@@ -77,12 +77,12 @@ NUM_WARMUP_EPOCHS = 10
 BASE_LR = 1e-4
 
 TAGS = {
-    "dataset": DATASET,
-    "batch_size": BATCH_SIZE,
-    "max_epochs": MAX_EPOCHS,
-    "num_warmup_epochs": NUM_WARMUP_EPOCHS,
-    "base_lr": BASE_LR,
-    "train_percent": TRAIN_PERCENT,
+    "dataset": str(DATASET),
+    "batch_size": str(BATCH_SIZE),
+    "max_epochs": str(MAX_EPOCHS),
+    "num_warmup_epochs": str(NUM_WARMUP_EPOCHS),
+    "base_lr": str(BASE_LR),
+    "train_percent": str(TRAIN_PERCENT),
     "model": "MLP",
 }
 RUN_NAME = f"MLP-{TRAIN_PERCENT}"

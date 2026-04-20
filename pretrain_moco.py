@@ -83,13 +83,13 @@ DATASET = _parsed_args.dataset
 GPU_ID = _parsed_args.gpu
 
 TAGS = {
-    "dataset": DATASET,
-    "batch_size": BATCH_SIZE,
-    "max_epochs": MAX_EPOCHS,
-    "num_warmup_epochs": NUM_WARMUP_EPOCHS,
-    "base_lr": BASE_LR,
-    "num_views": NUM_VIEWS,
-    "model_name": MODEL_NAME,
+    "dataset": str(DATASET),
+    "batch_size": str(BATCH_SIZE),
+    "max_epochs": str(MAX_EPOCHS),
+    "num_warmup_epochs": str(NUM_WARMUP_EPOCHS),
+    "base_lr": str(BASE_LR),
+    "num_views": str(NUM_VIEWS),
+    "model_name": str(MODEL_NAME),
 }
 
 EXPERIMENT_NAME = f"{DATASET}-pretrain"

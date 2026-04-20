@@ -103,12 +103,12 @@ N_JOBS = _parsed_args.n_jobs
 BATCH_SIZE = 2 * 512
 
 TAGS = {
-    "dataset": DATASET,
-    "train_percent": TRAIN_PERCENT,
-    "model_name": MODEL_NAME,
-    "pretrain": PRETRAIN,
-    "n_trials": N_TRIALS,
-    "n_jobs": N_JOBS,
+    "dataset": str(DATASET),
+    "train_percent": str(TRAIN_PERCENT),
+    "model_name": str(MODEL_NAME),
+    "pretrain": str(PRETRAIN),
+    "n_trials": str(N_TRIALS),
+    "n_jobs": str(N_JOBS),
 }
 EXPERIMENT_NAME = f"{DATASET}-finetuning"
 RUN_NAME_SUFFIX = f"SVM{MODEL_NAME}-{TRAIN_PERCENT}-{PRETRAIN}"
