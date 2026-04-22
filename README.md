@@ -1,4 +1,244 @@
-# sits-siam
+# SITS-SIAM
+
+Self-supervised pretraining framework for **satellite image time series (SITS)** crop classification.
+
+Trains deep learning backbones on unlabeled Sentinel-2 time series using contrastive and reconstruction methods, then fine-tunes for supervised crop mapping with uncertainty estimation.
+
+---
+
+## What it does
+
+```
+Unlabeled SITS data
+       │
+       ▼
+  Self-supervised pretraining  ←── SimSiam / MoCo / PMSN / Reconstruction
+       │
+       ▼
+  Pretrained backbone
+       │
+       ▼
+  Supervised fine-tuning  ←── Labeled parcels (70%, 10%, 1%, 0.1% of data)
+       │
+       ▼
+  Crop predictions + uncertainty (GMM anomaly scores)
+```
+
+**Supported datasets:** Brazil (IBGE/GEE), Texas (USDA), California (USDA)
+**Supported models:** Transformer (SITSBert), LSTM/GRU, ConvNext, Mamba, MLP
+**Pretraining methods:** SimSiam, MoCo, PMSN, Masked Reconstruction
+
+---
+
+## Installation
+
+```bash
+pip install -r requirements.txt
+```
+
+Core dependencies: PyTorch, PyTorch Lightning, Lightly (SSL), Scikit-learn, Optuna, MLflow, GeoPandas.
+
+Requires CUDA 12.x for Mamba backbone. Other models work on any GPU.
+
+---
+
+## Quick Start
+
+### 1. Pretrain a backbone (self-supervised)
+
+```bash
+# SimSiam on Brazil dataset, SITSBert model
+python pretrain_siam.py --model_name BERT --dataset brazil --gpu 0
+
+# MoCo on Texas dataset
+python pretrain_moco.py --model_name BERT --dataset texas --gpu 0
+```
+
+### 2. Fine-tune for crop classification
+
+```bash
+# Fine-tune with 10% labeled data, using MoCo pretrained weights
+python finetuning.py \
+    --model_name BERT \
+    --dataset brazil \
+    --train_percent 10 \
+    --pretrain MoCo \
+    --gpu 0
+
+# Fine-tune from scratch (no pretraining)
+python finetuning.py \
+    --model_name BERT \
+    --dataset texas \
+    --train_percent 70 \
+    --pretrain off \
+    --gpu 0
+```
+
+### 3. Evaluate in-season performance
+
+```bash
+# Test classification at 90 days into growing season
+python in_season.py --num_days 90 --pretrain MoCo --gpu 0
+```
+
+### 4. Run baseline classifiers (SVM / RF / LGBM)
+
+```bash
+python shallows.py --dataset brazil --train_percent 10 --n_trials 100 --n_jobs 20
+```
+
+### 5. Run all experiments in batch
+
+```bash
+python run_all.py  # Edit dataset/model/percent lists inside the script
+```
+
+---
+
+## Models
+
+| Model | Type | Best for |
+|---|---|---|
+| `BERT` | Transformer (SITSBert) | Main model, best accuracy |
+| `BERT++` | Transformer + reconstruction head | Pretraining with reconstruction |
+| `LSTM` | Bidirectional GRU | Variable-length sequences |
+| `ConvNext` | 1D ConvNext | Fast inference |
+| `Mamba` | State-space model | Long sequences (requires CUDA 12+) |
+| `MLP` | Flatten + dense | Baseline only |
+
+All models process Sentinel-2 time series: shape `(batch, timesteps, 10_bands)`.
+
+**10 spectral bands:** Blue, Green, Red, RedEdge1-4, NIR, SWIR1, SWIR2
+
+---
+
+## Pretraining Methods
+
+| Method | Script | Description |
+|---|---|---|
+| SimSiam | `pretrain_siam.py` | 4-view augmentation, NegativeCosineSimilarity loss |
+| MoCo | `pretrain_moco.py` | Momentum contrast, NTXentLoss, queue-based negatives |
+| PMSN | `pretrain_pmsn.py` | Parametric multi-view similarity network |
+| Reconstruction | `pretrain_reconstruct.py` | Predict masked spectral values (MAE-style) |
+
+All pretrained weights saved to MLflow as `weights.pth` and loaded automatically by `finetuning.py`.
+
+---
+
+## Data Format
+
+### Brazil (AgriGEE/IBGE)
+- Spatial parcels as GeoDataFrame (`.gpkg` or similar)
+- SITS time series as Pandas DataFrame indexed by parcel ID
+- Sequence length: up to 140 timesteps
+- 13+ crop classes: Soybean, Corn, Coffee, Sugar Cane, Forest Plantation, Pasture, etc.
+- Train/test split: by municipality (`CD_MUN`) to prevent spatial leakage
+
+### Texas / California (USDA NASS CDL)
+- Pre-packaged `.npz` files with fixed 45-timestep sequences
+- Texas: 7 crops (Corn, Cotton, Wheat, Rice, Sorghum, Oats, Pasture)
+- California: 14 crops (Almonds, Citrus, Grapes, Pistachios, etc.)
+- Train splits available: 70%, 10%, 1%, 0.1%
+
+### Input tensor structure
+
+```
+x    : (batch, seq_len, 10)   — spectral reflectances, zero-padded
+doy  : (batch, seq_len)       — day-of-year for each timestep (0 = padding)
+mask : (batch, seq_len)       — True where timestep is valid observation
+```
+
+---
+
+## Augmentation Pipeline
+
+Temporal augmentations applied during self-supervised pretraining:
+
+| Transform | Effect |
+|---|---|
+| `RandomTempShift(max_shift=30)` | Roll time series up to 30 days |
+| `RandomTempSwapping(max_distance=3)` | Swap nearby timesteps |
+| `RandomTempRemoval(probability=0.5)` | Remove random timesteps |
+| `RandomChanSwapping` | Swap spectral bands |
+| `RandomAddNoise(max_noise=0.05)` | Add Gaussian noise |
+| `RandomCloudAugmentation(prob=0.15)` | Simulate cloud masking |
+
+---
+
+## Uncertainty Estimation
+
+After fine-tuning, `run_gemos()` fits a per-class **Gaussian Mixture Model** on correctly-predicted training embeddings.
+
+At inference:
+- Each sample gets `gmm_score` (log-likelihood under predicted class GMM)
+- Low score → anomaly flag (`gmm_gemos_anomaly`)
+- Hyperparameters optimized via Optuna
+
+**Uncertainty metrics reported:** AUROC, AUPR-Error, AUPR-Success, FPR@95TPR
+
+---
+
+## Experiment Tracking
+
+All runs tracked in **MLflow**:
+
+| Experiment | Contents |
+|---|---|
+| `brazil-finetuning` | Fine-tuning runs on Brazil dataset |
+| `texas-finetuning` | Fine-tuning runs on Texas dataset |
+| `california-finetuning` | Fine-tuning runs on California dataset |
+| `{dataset}-pretrain` | Pretraining runs per dataset |
+| `brazil-in-season` | In-season evaluation runs |
+
+Logged per run: loss curves, accuracy, F1 scores, KNN quality scores, GMM uncertainty metrics, model weights, predictions.
+
+---
+
+## Architecture: SITSBert (default backbone)
+
+```
+Input: (batch, seq_len, 10)
+  │
+  ├── Positional Encoding (sinusoidal, max 366 days)
+  │
+  ├── Transformer Encoder
+  │     ├── n_layers = 3
+  │     ├── n_heads = 8
+  │     ├── hidden_dim = 256
+  │     └── dropout = 0.1
+  │
+  ├── Masked mean pooling (ignores zero-padded timesteps)
+  │
+  └── Output: embedding (256,)  →  classification head
+```
+
+**Training:** AdamW, linear warmup 10 epochs → cosine annealing, LR 1e-4, batch 1024, bf16-mixed.
+
+---
+
+## Directory Structure
+
+```
+sits-siam/
+├── sits_siam/              # Importable package
+│   ├── models.py           # Model architectures
+│   ├── augment.py          # Data transforms
+│   ├── auxiliar.py         # Callbacks, metrics, utilities
+│   └── utils/dataset.py    # Dataset classes
+├── pretrain_*.py           # Pretraining scripts
+├── finetuning.py           # Main supervised training + evaluation
+├── in_season.py            # Temporal/in-season evaluation
+├── shallows.py             # Classical ML baselines (SVM, RF, LGBM)
+├── run_all.py              # Batch experiment runner
+└── data/                   # Dataset files (not committed)
+```
+
+---
+
+## Legacy Debug Data
+
+<details>
+<summary>SITS-BERT first element of the first batch</summary>
 
 ## SITS-BERT first element of the first batch
 
@@ -298,3 +538,5 @@ mask tensor([False, False, False, False, False, False, False, False, False, Fals
          True,  True,  True,  True,  True,  True,  True,  True,  True,  True,
          True,  True,  True,  True])
 ```
+
+</details>

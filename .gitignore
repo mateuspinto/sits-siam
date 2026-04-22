@@ -5,3 +5,15 @@ lightning_logs/
 lightning_logs/.gitkeep
 
 *.pyc
+
+mlruns
+
+*Zone.Identifier
+*.pdf
+*.csv
+*.pth
+*.joblib
+
+aria2.*
+*.zip
+*.ipynb

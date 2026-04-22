@@ -2,26 +2,34 @@ import numpy as np
 import random
 import torch
 
+MASK = np.array(
+    [
+        0.004402,
+        -0.0009613,
+        0.0122,
+        -0.005836,
+        0.001667,
+        0.002434,
+        -0.00399,
+        0.0002251,
+        -0.00010735,
+        -0.010735,
+    ],
+    dtype=np.half,
+)
 
-def random_masking(ts, ts_length, seq_len, dimension):
+MASK_RATE = 0.15
+
+
+def random_masking(ts, ts_length, seq_len, _):
     ts_masking = ts.copy()
     mask = np.zeros((seq_len,), dtype=int)
 
     for i in range(ts_length):
         prob = random.random()
-        if prob < 0.15:
-            prob /= 0.15
+        if prob < MASK_RATE:
             mask[i] = 1
-
-            if prob < 0.5:
-                ts_masking[i, :] += np.random.uniform(
-                    low=-0.5, high=0, size=(dimension,)
-                )
-
-            else:
-                ts_masking[i, :] += np.random.uniform(
-                    low=0, high=0.5, size=(dimension,)
-                )
+            ts_masking[i, :] = MASK
 
     return ts_masking, mask
 
@@ -236,14 +244,6 @@ class AddMissingMask:
 
 
 class AddNDVIWeights:
-    """
-    Compute sample weights based on NDVI from input spectral data.
-
-    This function calculates the Normalized Difference Vegetation Index (NDVI) from the input spectral data,
-    applies cloud and dark pixel masking, and computes weights based on the NDVI values. The weights are then
-    normalized to sum to 1.
-    """
-
     def __call__(self, sample):
         x = sample["x"]
         all_zero_mask = np.all(x == 0, axis=1)
@@ -321,6 +321,7 @@ class IncreaseSequenceLength:
         sample["doy"] = new_doy
         return sample
 
+
 class LimitSequenceLength:
     def __init__(self, max_sequence_length):
         self.max_sequence_length = max_sequence_length
@@ -329,6 +330,7 @@ class LimitSequenceLength:
         sample["x"] = sample["x"][: self.max_sequence_length]
         sample["doy"] = sample["doy"][: self.max_sequence_length]
         return sample
+
 
 class ToPytorchTensor:
     def __call__(self, sample):
@@ -345,6 +347,43 @@ class ToPytorchTensor:
                 sample[key] = torch.tensor(value, dtype=torch.int64)
 
         return sample
+
+
+class ReduceToMonthlyMeans:
+    def __call__(self, sample):
+        x, doy = sample["x"], sample["doy"]
+        num_features = x.shape[1]
+
+        valid_mask = doy > 0
+        x_valid = x[valid_mask]
+        doy_valid = doy[valid_mask]
+
+        monthly_means = np.zeros((12, num_features), dtype=x.dtype)
+        present_mask = np.zeros(12, dtype=bool)
+
+        if len(doy_valid) > 0:
+            month_ends = [31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 366]
+            months = np.digitize(doy_valid, month_ends, right=True)
+
+            for m in range(12):
+                mask = months == m
+                if np.any(mask):
+                    monthly_means[m, :] = np.mean(x_valid[mask], axis=0)
+                    present_mask[m] = True
+
+        out = np.zeros((num_features, 12), dtype=x.dtype)
+
+        if not np.any(present_mask):
+            return out
+
+        valid_indices = np.where(present_mask)[0]
+        all_indices = np.arange(12)
+
+        for f in range(num_features):
+            y_valid = monthly_means[valid_indices, f]
+            out[f, :] = np.interp(all_indices, valid_indices, y_valid)
+
+        return {"x": out.T, "y": sample["y"], "doy": sample["y"], "mask": sample["y"]}
 
 
 class Pipeline:
