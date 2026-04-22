@@ -127,7 +127,7 @@ def run_shallow_models():
     for dataset in DATASETS:
         for percentage in PERCENTAGES:
 
-            if dataset=="brazil" and "percentage"==0.1:
+            if dataset=="brazil" and percentage==0.1:
                 continue
 
             count += 1

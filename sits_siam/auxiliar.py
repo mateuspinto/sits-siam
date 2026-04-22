@@ -3,16 +3,19 @@ import os
 import tempfile
 import joblib
 import json
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Remote MLflow + MinIO config
+# Remote MLflow + MinIO config — values loaded from .env at repo root.
 # Set before any mlflow import so all scripts pick this up automatically.
 # ---------------------------------------------------------------------------
-os.environ.setdefault("MLFLOW_TRACKING_URI",    "http://xaplprd156r:8889")
-os.environ.setdefault("AWS_ACCESS_KEY_ID",       "admin")
-os.environ.setdefault("AWS_SECRET_ACCESS_KEY",   "password123")
-os.environ.setdefault("MLFLOW_S3_ENDPOINT_URL",  "http://xaplprd156r:8891")
-os.environ.setdefault("MLFLOW_S3_IGNORE_TLS",    "true")
+_env_path = Path(__file__).resolve().parents[1] / ".env"
+if _env_path.exists():
+    for _line in _env_path.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _key, _, _val = _line.partition("=")
+            os.environ.setdefault(_key.strip(), _val.strip())
 
 import geopandas as gpd
 import lightning.pytorch as pl
@@ -56,11 +59,11 @@ def load_pretrain_weights(dataset, pretrain_strategy, model_name, model):
 
     runs_df = mlflow.search_runs(experiment_names=[experiment_name])
     runs_df = runs_df.sort_values("start_time", ascending=False).drop_duplicates(subset=["tags.mlflow.runName"]).reset_index(drop=True)
-    weight_path = runs_df[runs_df["tags.mlflow.runName"] == run_name].iloc[0].artifact_uri[7:] + "/weights.pth"
+    run_id = runs_df[runs_df["tags.mlflow.runName"] == run_name].iloc[0]["run_id"]
 
-    state_dict = torch.load(weight_path)
+    local_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path="weights.pth")
+    state_dict = torch.load(local_path, weights_only=True)
     state_dict = {k: v for k, v in state_dict.items() if "classifier" not in k}
-    print(state_dict)
     model.load_state_dict(state_dict, strict=False)
     return model
 

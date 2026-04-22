@@ -213,7 +213,7 @@ class SITS_MLP_Backbone(nn.Module):
             nn.ReLU(),
         )
 
-        self.classifier = nn.Linear(256, num_classes)
+        self.classifier = nn.Linear(hidden_dim, num_classes)
 
     def forward(self, x, doy=None, mask=None):
         x = self.flatten(x)
