@@ -54,7 +54,7 @@ def load_pretrain_weights(dataset, pretrain_strategy, model_name, model):
     """
     Load model weights from a previous pretraining run logged in MLflow, but ignoring layers with name classifier
     """
-    experiment_name = f"pretrain-{dataset}"
+    experiment_name = f"{dataset}-pretrain"
     run_name = f"{model_name}-{pretrain_strategy}"
 
     runs_df = mlflow.search_runs(experiment_names=[experiment_name])
