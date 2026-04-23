@@ -187,40 +187,50 @@ def predict_and_save_predictions(
 
         y_score_error = 1.0 - y_confidence
 
-        auroc = roc_auc_score(y_true_error, y_score_error)
+        # Guard: roc_auc_score / precision_recall_curve require both classes present.
+        # In open-set test sets, OPEN samples are always wrong → y_true_error may be
+        # all-1 if the closed-set model also fails on every closed sample.
+        if len(np.unique(y_true_error)) < 2 or len(np.unique(y_true_success)) < 2:
+            display_string += f"\n--- Failure Prediction Metrics ({prefix}) SKIPPED (only one class) ---\n"
+            return display_string
 
-        precision_err, recall_err, _ = precision_recall_curve(
-            y_true_error, y_score_error
-        )
-        aupr_error = auc(recall_err, precision_err)
+        try:
+            auroc = roc_auc_score(y_true_error, y_score_error)
 
-        precision_succ, recall_succ, _ = precision_recall_curve(
-            y_true_success, y_confidence
-        )
-        aupr_success = auc(recall_succ, precision_succ)
+            precision_err, recall_err, _ = precision_recall_curve(
+                y_true_error, y_score_error
+            )
+            aupr_error = auc(recall_err, precision_err)
 
-        fpr, tpr, _ = roc_curve(y_true_error, y_score_error)
-        idx = np.argmax(tpr >= 0.95)
-        fpr_at_95_tpr = fpr[idx] if idx < len(fpr) else fpr[-1]
+            precision_succ, recall_succ, _ = precision_recall_curve(
+                y_true_success, y_confidence
+            )
+            aupr_success = auc(recall_succ, precision_succ)
 
-        display_string += f"\n--- Failure Prediction Metrics ({prefix}) ---\n"
-        display_string += f"{name}_AUC: {auroc:.4f}\n"
-        display_string += f"{name}_AUPR-Error: {aupr_error:.4f}\n"
-        display_string += f"{name}_AUPR-Success: {aupr_success:.4f}\n"
-        display_string += f"{name}_FPR-95%-TPR: {fpr_at_95_tpr:.4f}\n"
+            fpr, tpr, _ = roc_curve(y_true_error, y_score_error)
+            idx = np.argmax(tpr >= 0.95)
+            fpr_at_95_tpr = fpr[idx] if idx < len(fpr) else fpr[-1]
 
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_{prefix}_AUC", auroc
-        )
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_{prefix}_AUPR_Error", aupr_error
-        )
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_{prefix}_AUPR_Success", aupr_success
-        )
-        mlflow_logger.experiment.log_metric(
-            mlflow_logger.run_id, f"{name}_{prefix}_FPR_95_TPR", fpr_at_95_tpr
-        )
+            display_string += f"\n--- Failure Prediction Metrics ({prefix}) ---\n"
+            display_string += f"{name}_AUC: {auroc:.4f}\n"
+            display_string += f"{name}_AUPR-Error: {aupr_error:.4f}\n"
+            display_string += f"{name}_AUPR-Success: {aupr_success:.4f}\n"
+            display_string += f"{name}_FPR-95%-TPR: {fpr_at_95_tpr:.4f}\n"
+
+            mlflow_logger.experiment.log_metric(
+                mlflow_logger.run_id, f"{name}_{prefix}_AUC", auroc
+            )
+            mlflow_logger.experiment.log_metric(
+                mlflow_logger.run_id, f"{name}_{prefix}_AUPR_Error", aupr_error
+            )
+            mlflow_logger.experiment.log_metric(
+                mlflow_logger.run_id, f"{name}_{prefix}_AUPR_Success", aupr_success
+            )
+            mlflow_logger.experiment.log_metric(
+                mlflow_logger.run_id, f"{name}_{prefix}_FPR_95_TPR", fpr_at_95_tpr
+            )
+        except Exception as exc:
+            display_string += f"\n--- Failure Prediction Metrics ({prefix}) ERROR: {exc} ---\n"
 
         return display_string
 

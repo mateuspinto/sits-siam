@@ -663,7 +663,10 @@ test_gdf = predict_and_save_predictions(
 
 # ─── GEMOS (GMM fit on closed only, scored on all test) ───────────────────────
 
-run_gemos(train_gdf, train_val_gdf, val_gdf, test_gdf, mlflow_logger)
+try:
+    run_gemos(train_gdf, train_val_gdf, val_gdf, test_gdf, mlflow_logger)
+except Exception as _gemos_exc:
+    print(f"[WARNING] run_gemos raised exception: {_gemos_exc}. Continuing to log open-set metrics.")
 
 # ─── Open-set detection metrics ───────────────────────────────────────────────
 
