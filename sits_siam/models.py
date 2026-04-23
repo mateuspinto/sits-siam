@@ -19,7 +19,7 @@ class PositionalEncoding(nn.Module):
         self.register_buffer("pe", pe)
 
     def forward(self, positions):
-        return self.pe[positions]
+        return self.pe[positions.clamp(0, self.pe.shape[0] - 1)]
 
 
 class SITSBertPlusPlus(nn.Module):
