@@ -24,7 +24,7 @@ import lightning.pytorch as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from lightning.pytorch.callbacks import DeviceStatsMonitor, ModelCheckpoint
+from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.loggers import MLFlowLogger
 from sklearn.model_selection import train_test_split
@@ -616,15 +616,13 @@ early_stopping_cb_p1 = EarlyStopping(
     mode="min",
 )
 
-devicestats_monitor = DeviceStatsMonitor(cpu_stats=False)
-
 trainer_p1 = pl.Trainer(
     max_epochs=MAX_EPOCHS,
     min_epochs=2 * NUM_WARMUP_EPOCHS,
     accelerator="gpu",
     devices=[GPU_ID],
     precision="bf16-mixed",
-    callbacks=[checkpoint_cb_p1, early_stopping_cb_p1, devicestats_monitor],
+    callbacks=[checkpoint_cb_p1, early_stopping_cb_p1],
     logger=mlflow_logger,
     log_every_n_steps=5,
     enable_progress_bar=IS_TTY,

@@ -15,7 +15,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from pytorch_lightning.callbacks import DeviceStatsMonitor, ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import MLFlowLogger
 import mlflow
@@ -577,15 +577,13 @@ early_stopping_cb_p1 = EarlyStopping(
     patience=10,
     mode="min",
 )
-devicestats_monitor = DeviceStatsMonitor(cpu_stats=False)
-
 trainer_p1 = pl.Trainer(
     max_epochs=MAX_EPOCHS,
     min_epochs=2 * NUM_WARMUP_EPOCHS,
     accelerator="gpu",
     devices=[GPU_ID],
     precision="bf16-mixed",
-    callbacks=[checkpoint_cb_p1, early_stopping_cb_p1, devicestats_monitor],
+    callbacks=[checkpoint_cb_p1, early_stopping_cb_p1],
     logger=mlflow_logger,
     log_every_n_steps=5,
 )
@@ -619,7 +617,7 @@ trainer_p2 = pl.Trainer(
     accelerator="gpu",
     devices=[GPU_ID],
     precision="bf16-mixed",
-    callbacks=[checkpoint_cb_p2, early_stopping_cb_p2, devicestats_monitor],
+    callbacks=[checkpoint_cb_p2, early_stopping_cb_p2],
     logger=mlflow_logger,
     log_every_n_steps=5,
 )
@@ -657,7 +655,7 @@ trainer_p3 = pl.Trainer(
     accelerator="gpu",
     devices=[GPU_ID],
     precision="bf16-mixed",
-    callbacks=[checkpoint_cb_p3, early_stopping_cb_p3, devicestats_monitor],
+    callbacks=[checkpoint_cb_p3, early_stopping_cb_p3],
     logger=mlflow_logger,
     log_every_n_steps=5,
 )
